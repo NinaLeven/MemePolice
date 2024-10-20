@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"log/slog"
 	"os"
 	"os/signal"
-	// tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 func main() {
@@ -23,15 +25,15 @@ func main() {
 
 	assetsDirPath := flag.String("a", "assets", "path to assets directory")
 	migrationsDirPath := flag.String("m", "migrations", "path to migrations directory")
-	dumpDirPath := flag.String("d", "dump", "path to dump directory")
+	dumpDirPath := flag.String("d", "", "path to dump directory")
 	postgresURL := flag.String("p", "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable", "postgres url")
 	flag.Parse()
 
-	// bot, err := tgbotapi.NewBotAPI(os.Getenv("BOT_TOKEN"))
-	// if err != nil {
-	// 	log.Panic(fmt.Errorf("unable to create bot: %w", err))
-	// }
-	// defer bot.StopReceivingUpdates()
+	bot, err := tgbotapi.NewBotAPI(os.Getenv("BOT_TOKEN"))
+	if err != nil {
+		log.Panic(fmt.Errorf("unable to create bot: %w", err))
+	}
+	defer bot.StopReceivingUpdates()
 
 	assets, err := NewFileAssets(*assetsDirPath)
 	if err != nil {
@@ -44,10 +46,18 @@ func main() {
 	}
 	defer psqlStorage.Close()
 
-	// err = NewUpdateHandler(bot, psqlStorage, assets).HandleUpdates(ctx)
-	err = NewUpdateHandler(nil, psqlStorage, assets).OneTimeMigration(ctx, *dumpDirPath)
-	if err != nil {
-		slog.ErrorContext(ctx, "unable to handle updates", slog.String("err", err.Error()))
+	updateHandler := NewUpdateHandler(bot, psqlStorage, assets)
+
+	if *dumpDirPath == "" {
+		err := updateHandler.HandleUpdates(ctx)
+		if err != nil {
+			slog.ErrorContext(ctx, "unable to handle updates", slog.String("err", err.Error()))
+		}
+	} else {
+		err := updateHandler.OneTimeMigration(ctx, *dumpDirPath)
+		if err != nil {
+			slog.ErrorContext(ctx, "unable to do one time migratio", slog.String("err", err.Error()))
+		}
 	}
 
 	cancel()
