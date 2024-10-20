@@ -2,255 +2,332 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"iter"
+	"log"
 	"log/slog"
-	"math/bits"
-	"os"
-	"path"
-	"slices"
-	"sync"
-	"sync/atomic"
+	"time"
 
-	"github.com/google/uuid"
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/jmoiron/sqlx"
+	_ "github.com/lib/pq"
+	"github.com/pressly/goose/v3"
 )
 
-type storageData struct {
-	LastUpdateID int
-	Chats        map[int64][]MessageImageHash
+type gooseLoggerMock struct {
 }
 
-type Storage struct {
-	done            chan error
-	closed          int32
-	storageFilepath string
-	m               sync.RWMutex
-
-	storageData
+func (gooseLoggerMock) Fatalf(format string, v ...interface{}) {
+	log.Fatalf(format, v...)
+}
+func (gooseLoggerMock) Printf(format string, v ...interface{}) {
+	// do nothing; too much spam
 }
 
-func NewStorage(ctx context.Context,
-	storageFilepath string,
-) *Storage {
-	storage := &Storage{
-		done:            make(chan error, 1),
-		storageFilepath: storageFilepath,
-		storageData: storageData{
-			Chats: map[int64][]MessageImageHash{},
+func migrateDatabaseUp(migrationsDir string, db *sql.DB) error {
+	goose.SetLogger(gooseLoggerMock{})
+
+	err := goose.Up(db, migrationsDir)
+	if err != nil {
+		return fmt.Errorf("unable to migrate database: %w", err)
+	}
+
+	return nil
+}
+
+type PSQLStorageManager struct {
+	db *sqlx.DB
+	*storage
+}
+
+func NewPSQLStorageManager(ctx context.Context,
+	purl string,
+	migrationsDir string,
+) (*PSQLStorageManager, error) {
+	db, err := sql.Open("postgres", purl)
+	if err != nil {
+		return nil, fmt.Errorf("unable to connect to postgres: %w", err)
+	}
+
+	err = migrateDatabaseUp(migrationsDir, db)
+	if err != nil {
+		return nil, fmt.Errorf("unable to migrate db: %w", err)
+	}
+
+	dbx := sqlx.NewDb(db, "postgres")
+
+	return &PSQLStorageManager{
+		db: dbx,
+		storage: &storage{
+			db: dbx,
 		},
-	}
-
-	err := storage.load()
-	if err != nil {
-		slog.ErrorContext(ctx, "unable to load storage file", slog.String("error", err.Error()))
-	}
-
-	go func() {
-		<-ctx.Done()
-		err := storage.Close()
-		if err != nil {
-			slog.ErrorContext(ctx, "unable to close storage", slog.String("error", err.Error()))
-		}
-	}()
-
-	return storage
+	}, nil
 }
 
-func (r *Storage) load() error {
-	r.m.Lock()
-	defer r.m.Unlock()
-
-	file, err := os.Open(r.storageFilepath)
+func (r *PSQLStorageManager) Close() error {
+	err := r.db.Close()
 	if err != nil {
-		return fmt.Errorf("unable to open storage file: %w", err)
+		return fmt.Errorf("unable to close db: %w", err)
 	}
-	defer file.Close()
-
-	err = json.NewDecoder(file).Decode(&r.storageData)
-	if err != nil {
-		r.storageData = storageData{
-			LastUpdateID: 0,
-			Chats:        map[int64][]MessageImageHash{},
-		}
-		return fmt.Errorf("unable to decode stored data: %w", err)
-	}
-
-	if r.storageData.Chats == nil {
-		r.storageData.Chats = map[int64][]MessageImageHash{}
-	}
-
 	return nil
 }
 
-func (r *Storage) store() error {
-	r.m.Lock()
-	defer r.m.Unlock()
-
-	tempFilePath := path.Join(os.TempDir(), fmt.Sprintf("memepolice_%s.json", uuid.NewString()))
-
-	file, err := os.Create(tempFilePath)
+func (r *PSQLStorageManager) ExecWithTx(ctx context.Context, handler func(ctx context.Context, storage Storage) error) error {
+	tx, err := r.db.BeginTxx(ctx, &sql.TxOptions{})
 	if err != nil {
-		return fmt.Errorf("unable to open storage file %w", err)
-	}
-	defer file.Close()
-
-	err = json.NewEncoder(file).Encode(r.storageData)
-	if err != nil {
-		return fmt.Errorf("unable to store")
+		return fmt.Errorf("unable to exec in tx: %w", err)
 	}
 
-	err = os.Rename(tempFilePath, r.storageFilepath)
-	if err != nil {
-		return fmt.Errorf("unable to replace old storage file with a new one: %w", err)
-	}
-
-	return nil
-}
-
-func (r *Storage) Done() chan error {
-	return r.done
-}
-
-func (r *Storage) Close() (err error) {
-	if !atomic.CompareAndSwapInt32(&r.closed, 0, 1) {
-		return fmt.Errorf("already closed")
-	}
 	defer func() {
-		r.done <- err
-		close(r.done)
+		if err != nil {
+			rerr := tx.Rollback()
+			if rerr != nil {
+				err = errors.Join(err, fmt.Errorf("rollback error: %w"), err)
+			}
+		}
+	}()
+	defer func() {
+		val := recover()
+		if val != nil {
+			perr, ok := val.(error)
+			if !ok {
+				perr = fmt.Errorf("%v", val)
+			}
+			err = fmt.Errorf("panic: %w", perr)
+		}
 	}()
 
-	err = r.store()
+	err = handler(ctx, &storage{db: tx})
 	if err != nil {
-		return fmt.Errorf("unable to store data: %w", err)
+		return fmt.Errorf("tx handler error: %w", err)
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		return fmt.Errorf("commit error: %w", err)
 	}
 
 	return nil
 }
 
-type MessageImageHash struct {
-	MessageID int
-	ChatID    int64
-	Hash      uint64
+type querier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	GetContext(ctx context.Context, dest interface{}, query string, args ...interface{}) error
+	SelectContext(ctx context.Context, dest interface{}, query string, args ...interface{}) error
 }
 
-func (r *Storage) CreateMessageImageHash(ctx context.Context, opts MessageImageHash) error {
-	r.m.Lock()
-	defer r.m.Unlock()
-
-	r.Chats[opts.ChatID] = append(r.Chats[opts.ChatID], opts)
-	return nil
+type storage struct {
+	db querier
 }
 
-type ErrNotFound struct {
-	Err error
-}
+func (r *storage) getNewMessageID(ctx context.Context) (int64, error) {
+	var id int64
 
-func (e *ErrNotFound) Error() string {
-	if e.Err == nil {
-		return "not found"
-	}
-	return fmt.Sprintf("not found: %s", e.Err.Error())
-}
-
-func (e *ErrNotFound) Is(target error) bool {
-	_, ok := target.(*ErrNotFound)
-	return ok
-}
-
-func (e *ErrNotFound) As(target interface{}) bool {
-	if _, ok := target.(*ErrNotFound); ok {
-		*target.(*ErrNotFound) = *e
-		return true
-	}
-	return errors.As(e.Err, target)
-}
-
-func hammingDistance(lhash, rhash uint64) int {
-	return bits.OnesCount64(lhash ^ rhash)
-}
-
-const cutoffDistance = 7
-
-func getMatchingMessageImageHash(
-	chat iter.Seq2[int, MessageImageHash],
-	hash uint64,
-) (*MessageImageHash, error) {
-	for _, item := range chat {
-		if hammingDistance(hash, item.Hash) < cutoffDistance {
-			return &item, nil
-		}
+	err := r.db.GetContext(ctx, &id, "select nextval('message_id_seq')")
+	if err != nil {
+		return 0, fmt.Errorf("unable to select next message id: %w", err)
 	}
 
-	return nil, &ErrNotFound{
-		Err: fmt.Errorf("message image hash not found"),
-	}
+	return id, nil
 }
 
-func (r *Storage) GetFirstMatchingMessageImageHash(ctx context.Context, chatID int64, hash uint64) (*MessageImageHash, error) {
-	r.m.RLock()
-	defer r.m.RUnlock()
-
-	chat, ok := r.Chats[chatID]
-	if !ok {
-		return nil, &ErrNotFound{
-			Err: fmt.Errorf("chat not found: %d", chatID),
-		}
+func uint64PtrToInt64Ptr(v *uint64) *int64 {
+	if v == nil {
+		return nil
 	}
-
-	return getMatchingMessageImageHash(slices.All(chat), hash)
+	res := int64(*v)
+	return &res
 }
 
-func (r *Storage) GetLastMatchingMessageImageHash(ctx context.Context, chatID int64, hash uint64) (*MessageImageHash, error) {
-	r.m.RLock()
-	defer r.m.RUnlock()
-
-	chat, ok := r.Chats[chatID]
-	if !ok {
-		return nil, &ErrNotFound{
-			Err: fmt.Errorf("chat not found: %d", chatID),
-		}
+func int64PtrToUint64Ptr(v *int64) *uint64 {
+	if v == nil {
+		return nil
 	}
-
-	return getMatchingMessageImageHash(slices.Backward(chat), hash)
+	res := uint64(*v)
+	return &res
 }
 
-func (r *Storage) GetLastMessageImageHashByID(ctx context.Context, chatID int64, messageID int) (*MessageImageHash, error) {
-	r.m.RLock()
-	defer r.m.RUnlock()
-
-	chat, ok := r.Chats[chatID]
-	if !ok {
-		return nil, &ErrNotFound{
-			Err: fmt.Errorf("chat not found: %d", chatID),
-		}
+func (r *storage) UpsertMessage(ctx context.Context, msg Message) error {
+	data, err := json.Marshal(msg.Raw)
+	if err != nil {
+		return fmt.Errorf("unable to marshal raw message: %w", err)
 	}
 
-	for _, item := range slices.Backward(chat) {
-		if item.MessageID == messageID {
-			return &item, nil
-		}
+	nextId, err := r.getNewMessageID(ctx)
+	if err != nil {
+		return err
 	}
 
-	return nil, &ErrNotFound{
-		Err: fmt.Errorf("message image hash not found"),
+	var actualId int64
+
+	err = r.db.GetContext(ctx, &actualId, `
+insert into message(
+	id,
+	chat_id,
+	message_id,
+	data,
+	image_hash,
+	created_at,
+	updated_at
+) values (
+	$1,
+	$2,
+	$3,
+	$4,
+	$5,
+	$6,
+	$7
+)
+on conflict (chat_id, message_id)
+	do update 
+		set 
+			data = excluded.data,
+			image_hash = excluded.image_hash, 
+			updated_at = excluded.updated_at
+returning id
+	`,
+		nextId,
+		msg.ChatID,
+		msg.MessageID,
+		string(data),
+		uint64PtrToInt64Ptr(msg.ImageHash),
+		msg.CreatedAt,
+		msg.UpdatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("unable to upsert message: %w", err)
 	}
-}
 
-func (r *Storage) SetLastUpdateID(ctx context.Context, lastUpdateID int) error {
-	r.m.Lock()
-	defer r.m.Unlock()
-
-	r.LastUpdateID = lastUpdateID
+	if nextId != actualId {
+		slog.InfoContext(ctx, "overriting message",
+			slog.Int64("id", actualId),
+			slog.Int64("chat_id", msg.ChatID),
+			slog.Int("message_id", msg.MessageID),
+		)
+	}
 
 	return nil
 }
 
-func (r *Storage) GetLastUpdateID(ctx context.Context) (int, error) {
-	r.m.RLock()
-	defer r.m.RUnlock()
+type messageDB struct {
+	ChatID    int64     `db:"chat_id"`
+	MessageID int       `db:"message_id"`
+	Raw       string    `db:"data"`
+	ImageHash *int64    `db:"image_hash"`
+	CreatedAt time.Time `db:"created_at"`
+	UpdatedAt time.Time `db:"updated_at"`
+}
 
-	return r.LastUpdateID, nil
+func messageFromDB(r messageDB) (*Message, error) {
+	var data tgbotapi.Message
+	err := json.Unmarshal([]byte(r.Raw), &data)
+	if err != nil {
+		return nil, fmt.Errorf("unable to unmarshal raw msg: %w", err)
+	}
+
+	return &Message{
+		ChatID:    r.ChatID,
+		MessageID: r.MessageID,
+		Raw:       data,
+		ImageHash: int64PtrToUint64Ptr(r.ImageHash),
+		CreatedAt: r.CreatedAt,
+		UpdatedAt: r.UpdatedAt,
+	}, nil
+}
+
+func (r *storage) getMatchingMessageByImageHash(ctx context.Context, chatID int64, hash uint64, order string) (*Message, error) {
+	var res []messageDB
+
+	err := r.db.SelectContext(ctx, &res, `
+select 
+	chat_id,
+	message_id,
+	data,
+	image_hash,
+	created_at,
+	updated_at
+from message
+where image_hash <@ ($1, 6)
+	and image_hash is not null
+	and chat_id = $2
+order by created_at `+order+` 
+limit 1
+`,
+		int64(hash),
+		chatID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("unable to select message by image hash: %w", err)
+	}
+
+	if len(res) == 0 {
+		return nil, &ErrNotFound{}
+	}
+
+	return messageFromDB(res[0])
+}
+
+func (r *storage) GetFirstMatchingMessageByImageHash(ctx context.Context, chatID int64, hash uint64) (*Message, error) {
+	return r.getMatchingMessageByImageHash(ctx, chatID, hash, "asc")
+}
+
+func (r *storage) GetLastMatchingMessageByImageHash(ctx context.Context, chatID int64, hash uint64) (*Message, error) {
+	return r.getMatchingMessageByImageHash(ctx, chatID, hash, "desc")
+}
+
+func (r *storage) GetMessage(ctx context.Context, chatID int64, messageID int) (*Message, error) {
+	var res []messageDB
+
+	err := r.db.SelectContext(ctx, &res, `
+select 
+	chat_id,
+	message_id,
+	data,
+	image_hash,
+	created_at,
+	updated_at
+from message
+where chat_id = $1
+	and message_id = $2
+`,
+		chatID,
+		messageID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("unable to select message by image hash: %w", err)
+	}
+
+	if len(res) == 0 {
+		return nil, &ErrNotFound{}
+	}
+
+	return messageFromDB(res[0])
+}
+
+func (r *storage) SetLastUpdateID(ctx context.Context, lastUpdateID int) error {
+	_, err := r.db.ExecContext(ctx, `
+update last_update_id
+set last_update_id = $1
+	`,
+		lastUpdateID,
+	)
+	if err != nil {
+		return fmt.Errorf("unable to udpate last_update_id: %w", err)
+	}
+
+	return nil
+}
+
+func (r *storage) GetLastUpdateID(ctx context.Context) (int, error) {
+	var res int
+
+	err := r.db.GetContext(ctx, &res, `select last_update_id from last_update_id`)
+	if err != nil {
+		return 0, fmt.Errorf("unable to select last_update_id: %w", err)
+	}
+
+	return res, nil
 }

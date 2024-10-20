@@ -6,7 +6,7 @@ import (
 	"path"
 )
 
-type Assets struct {
+type FileAssets struct {
 	assetsDirectoryPath string
 
 	messageDeleted []byte
@@ -14,8 +14,8 @@ type Assets struct {
 	noRepeat       []byte
 }
 
-func NewAssets(assetsDirectoryPath string) (*Assets, error) {
-	assets := &Assets{
+func NewFileAssets(assetsDirectoryPath string) (*FileAssets, error) {
+	assets := &FileAssets{
 		assetsDirectoryPath: assetsDirectoryPath,
 	}
 
@@ -27,7 +27,7 @@ func NewAssets(assetsDirectoryPath string) (*Assets, error) {
 	return assets, nil
 }
 
-func (r *Assets) load() error {
+func (r *FileAssets) load() error {
 	var err error
 
 	err = r.loadAudioMessageDeleted()
@@ -46,7 +46,7 @@ func (r *Assets) load() error {
 	return nil
 }
 
-func (r *Assets) loadAudioMessageDeleted() error {
+func (r *FileAssets) loadAudioMessageDeleted() error {
 	file, err := os.ReadFile(path.Join(r.assetsDirectoryPath, "message_deleted.mp3"))
 	if err != nil {
 		return fmt.Errorf("unable to open message_deleted file: %w", err)
@@ -55,7 +55,7 @@ func (r *Assets) loadAudioMessageDeleted() error {
 	return nil
 }
 
-func (r *Assets) loadAudioNoRererence() error {
+func (r *FileAssets) loadAudioNoRererence() error {
 	file, err := os.ReadFile(path.Join(r.assetsDirectoryPath, "no_reference.mp3"))
 	if err != nil {
 		return fmt.Errorf("unable to open no_reference file: %w", err)
@@ -64,7 +64,7 @@ func (r *Assets) loadAudioNoRererence() error {
 	return nil
 }
 
-func (r *Assets) loadAudioNoRepeat() error {
+func (r *FileAssets) loadAudioNoRepeat() error {
 	file, err := os.ReadFile(path.Join(r.assetsDirectoryPath, "no_repeat.mp3"))
 	if err != nil {
 		return fmt.Errorf("unable to open no_repeat file: %w", err)
@@ -73,14 +73,14 @@ func (r *Assets) loadAudioNoRepeat() error {
 	return nil
 }
 
-func (r *Assets) GetAudioMessageDeleted() []byte {
+func (r *FileAssets) GetAudioMessageDeleted() []byte {
 	return r.messageDeleted
 }
 
-func (r *Assets) GetAudioNoRererence() []byte {
+func (r *FileAssets) GetAudioNoRererence() []byte {
 	return r.noReference
 }
 
-func (r *Assets) GetAudioNoRepeat() []byte {
+func (r *FileAssets) GetAudioNoRepeat() []byte {
 	return r.noRepeat
 }
