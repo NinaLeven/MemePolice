@@ -84,7 +84,7 @@ func (r *PSQLStorageManager) ExecWithTx(ctx context.Context, handler func(ctx co
 		if err != nil {
 			rerr := tx.Rollback()
 			if rerr != nil {
-				err = errors.Join(err, fmt.Errorf("rollback error: %w"), err)
+				err = errors.Join(err, fmt.Errorf("rollback error: %w", err))
 			}
 		}
 	}()
