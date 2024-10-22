@@ -107,6 +107,7 @@ func (r *UpdateHandler) OneTimeMigration(ctx context.Context, dataDirectoryPath 
 		FromName  string `json:"from"`
 		FromID    string `json:"from_id"`
 		PhotoPath string `json:"photo"`
+		VideoPath string `json:"video"`
 		Text      text   `json:"text"`
 	}
 	type dump struct {
@@ -154,6 +155,19 @@ func (r *UpdateHandler) OneTimeMigration(ctx context.Context, dataDirectoryPath 
 		return ptr(imgHash.GetHash()), nil
 	}
 
+	getVideoHash := func(pth string) (*uint64, *uint64, error) {
+		if pth == "" {
+			return nil, nil, nil
+		}
+
+		vHash, aHash, err := videohash.PerceptualHash(pth)
+		if err != nil {
+			return nil, nil, fmt.Errorf("unable to get video perceptual hash: %w", err)
+		}
+
+		return &vHash, &aHash, nil
+	}
+
 	processMessage := func(ctx context.Context, storage Storage, msg *message) error {
 		if msg == nil || msg.Type != "message" {
 			return nil
@@ -162,6 +176,11 @@ func (r *UpdateHandler) OneTimeMigration(ctx context.Context, dataDirectoryPath 
 		imgHash, err := getPhotoHash(msg.PhotoPath)
 		if err != nil {
 			return fmt.Errorf("unable to photo hash: %w", err)
+		}
+
+		vvHash, vaHash, err := getVideoHash(msg.VideoPath)
+		if err != nil {
+			return fmt.Errorf("unable to get video hash: %w", err)
 		}
 
 		userId, err := strconv.ParseInt(strings.TrimPrefix(msg.FromID, "user"), 10, 64)
@@ -188,9 +207,11 @@ func (r *UpdateHandler) OneTimeMigration(ctx context.Context, dataDirectoryPath 
 				},
 				Text: (string(msg.Text))[0:min(len(msg.Text), 4096)],
 			},
-			ImageHash: imgHash,
-			CreatedAt: timestamp,
-			UpdatedAt: timestamp,
+			ImageHash:      imgHash,
+			VideoVideoHash: vvHash,
+			VideoAudioHash: vaHash,
+			CreatedAt:      timestamp,
+			UpdatedAt:      timestamp,
 		})
 		if cerr != nil {
 			return fmt.Errorf("unable to upsert message: %w", err)
@@ -440,6 +461,10 @@ func (r *UpdateHandler) sendMessageReply(ctx context.Context,
 
 func (r *UpdateHandler) handleNewVideo(ctx context.Context, storage Storage, message *tgbotapi.Message) (*uint64, *uint64, error) {
 	if message.Video == nil {
+		return nil, nil, nil
+	}
+	if message.Video.FileSize > 1024*1024*120 {
+		slog.WarnContext(ctx, "video too big", slog.Int("size", message.Video.FileSize))
 		return nil, nil, nil
 	}
 
