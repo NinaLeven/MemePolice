@@ -239,12 +239,14 @@ func messageFromDB(r messageDB) (*Message, error) {
 	}
 
 	return &Message{
-		ChatID:    r.ChatID,
-		MessageID: r.MessageID,
-		Raw:       data,
-		ImageHash: int64PtrToUint64Ptr(r.ImageHash),
-		CreatedAt: r.CreatedAt,
-		UpdatedAt: r.UpdatedAt,
+		ChatID:         r.ChatID,
+		MessageID:      r.MessageID,
+		Raw:            data,
+		ImageHash:      int64PtrToUint64Ptr(r.ImageHash),
+		VideoVideoHash: int64PtrToUint64Ptr(r.VideoVideoHash),
+		VideoAudioHash: int64PtrToUint64Ptr(r.VideoAudioHash),
+		CreatedAt:      r.CreatedAt,
+		UpdatedAt:      r.UpdatedAt,
 	}, nil
 }
 

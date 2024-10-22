@@ -469,7 +469,7 @@ func (r *UpdateHandler) handleNewVideo(ctx context.Context, storage Storage, mes
 		return nil, nil, fmt.Errorf("unable to calculate video perception hash: %w", err)
 	}
 
-	_, err = storage.GetFirstMatchingMessageByVideoHash(ctx, message.Chat.ID, videoHash, audioHash)
+	_, err = storage.GetLastMatchingMessageByVideoHash(ctx, message.Chat.ID, videoHash, audioHash)
 	if err != nil && !errors.Is(err, &ErrNotFound{}) {
 		return &videoHash, &audioHash, fmt.Errorf("unable to get lash matching message video hash: %w", err)
 	}
