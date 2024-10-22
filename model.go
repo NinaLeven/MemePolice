@@ -46,18 +46,22 @@ func (e *ErrNotFound) As(target interface{}) bool {
 }
 
 type Message struct {
-	MessageID int
-	ChatID    int64
-	Raw       tgbotapi.Message
-	ImageHash *uint64
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	MessageID      int
+	ChatID         int64
+	Raw            tgbotapi.Message
+	ImageHash      *uint64
+	VideoVideoHash *uint64
+	VideoAudioHash *uint64
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 type Storage interface {
 	UpsertMessage(ctx context.Context, msg Message) error
 	GetFirstMatchingMessageByImageHash(ctx context.Context, chatID int64, hash uint64) (*Message, error)
 	GetLastMatchingMessageByImageHash(ctx context.Context, chatID int64, hash uint64) (*Message, error)
+	GetFirstMatchingMessageByVideoHash(ctx context.Context, chatID int64, videoHash, audioHash uint64) (*Message, error)
+	GetLastMatchingMessageByVideoHash(ctx context.Context, chatID int64, videoHash, audioHash uint64) (*Message, error)
 	GetMessage(ctx context.Context, chatID int64, messageID int) (*Message, error)
 
 	SetLastUpdateID(ctx context.Context, lastUpdateID int) error

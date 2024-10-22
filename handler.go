@@ -8,6 +8,7 @@ import (
 	"image"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"os"
 	"path"
@@ -18,6 +19,8 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 
+	"github.com/NinaLeven/MemePolice/fsutils"
+	"github.com/NinaLeven/MemePolice/videohash"
 	"github.com/corona10/goimagehash"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -293,13 +296,20 @@ func (r *UpdateHandler) handleMessage(ctx context.Context, storage Storage, mess
 		slog.ErrorContext(ctx, "unable to handle new photo", slog.String("err", err.Error()))
 	}
 
+	videoVideoHash, videoAudioHash, err := r.handleNewVideo(ctx, storage, message)
+	if err != nil {
+		slog.ErrorContext(ctx, "unable to handle new video", slog.String("err", err.Error()))
+	}
+
 	err = storage.UpsertMessage(ctx, Message{
-		MessageID: message.MessageID,
-		ChatID:    message.Chat.ID,
-		Raw:       *message,
-		ImageHash: imageHash,
-		CreatedAt: time.Now(),
-		UpdatedAt: time.Now(),
+		MessageID:      message.MessageID,
+		ChatID:         message.Chat.ID,
+		Raw:            *message,
+		ImageHash:      imageHash,
+		VideoVideoHash: videoVideoHash,
+		VideoAudioHash: videoAudioHash,
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
 	})
 	if err != nil {
 		return fmt.Errorf("unable to save message image hash: %w", err)
@@ -325,7 +335,7 @@ func (r *UpdateHandler) handleWhyCommand(ctx context.Context, storage Storage, m
 	if err != nil && !errors.Is(err, &ErrNotFound{}) {
 		return fmt.Errorf("unable to get message hash by id: %w", err)
 	}
-	if err != nil && errors.Is(err, &ErrNotFound{}) || repeatedMsg.ImageHash == nil {
+	if err != nil && errors.Is(err, &ErrNotFound{}) {
 		err = r.sendVoiceMessageReply(ctx, message.Chat.ID, message.MessageID, "no_repeat", r.assets.GetAudioNoRepeat())
 		if err != nil {
 			return fmt.Errorf("unable to send no_repeat voice message %w", err)
@@ -333,7 +343,22 @@ func (r *UpdateHandler) handleWhyCommand(ctx context.Context, storage Storage, m
 		return nil
 	}
 
-	origMsg, err := storage.GetFirstMatchingMessageByImageHash(ctx, message.Chat.ID, *repeatedMsg.ImageHash)
+	var origMsg *Message
+
+	switch {
+	case repeatedMsg.ImageHash != nil:
+		origMsg, err = storage.GetFirstMatchingMessageByImageHash(ctx, message.Chat.ID, *repeatedMsg.ImageHash)
+
+	case repeatedMsg.VideoVideoHash != nil && repeatedMsg.VideoAudioHash != nil:
+		origMsg, err = storage.GetFirstMatchingMessageByVideoHash(ctx, message.Chat.ID, *repeatedMsg.VideoVideoHash, *repeatedMsg.VideoAudioHash)
+
+	default:
+		err = r.sendVoiceMessageReply(ctx, message.Chat.ID, message.MessageID, "no_repeat", r.assets.GetAudioNoRepeat())
+		if err != nil {
+			return fmt.Errorf("unable to send no_repeat voice message %w", err)
+		}
+		return nil
+	}
 	if err != nil && !errors.Is(err, &ErrNotFound{}) {
 		return fmt.Errorf("unable to get first matching message image hash: %w", err)
 	}
@@ -413,6 +438,53 @@ func (r *UpdateHandler) sendMessageReply(ctx context.Context,
 	return nil
 }
 
+func (r *UpdateHandler) handleNewVideo(ctx context.Context, storage Storage, message *tgbotapi.Message) (*uint64, *uint64, error) {
+	if message.Video == nil {
+		return nil, nil, nil
+	}
+
+	tempDir, err := fsutils.GetTempDir()
+	if err != nil {
+		return nil, nil, fmt.Errorf("unable to get temp dir: %w", err)
+	}
+	defer fsutils.CleanupTempDir(tempDir)
+
+	ext, err := mime.ExtensionsByType(message.Video.MimeType)
+	if err != nil {
+		return nil, nil, fmt.Errorf("unable to determine mime type: %s: %w", message.Video.MimeType, err)
+	}
+	if len(ext) == 0 {
+		return nil, nil, fmt.Errorf("unknown mime type: %s", message.Video.MimeType)
+	}
+
+	tempVideoPath := path.Join(tempDir, "video"+ext[0])
+
+	err = r.getTelegramVideo(ctx, message.Video.FileID, tempVideoPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("unable to get telegram video: %w", err)
+	}
+
+	videoHash, audioHash, err := videohash.PerceptualHash(tempVideoPath)
+	if err != nil {
+		return nil, nil, fmt.Errorf("unable to calculate video perception hash: %w", err)
+	}
+
+	_, err = storage.GetFirstMatchingMessageByVideoHash(ctx, message.Chat.ID, videoHash, audioHash)
+	if err != nil && !errors.Is(err, &ErrNotFound{}) {
+		return &videoHash, &audioHash, fmt.Errorf("unable to get lash matching message video hash: %w", err)
+	}
+	if err != nil && errors.Is(err, &ErrNotFound{}) {
+		return &videoHash, &audioHash, nil
+	}
+
+	err = r.sendStaleMemeReaction(ctx, message.Chat.ID, message.MessageID)
+	if err != nil {
+		return &videoHash, &audioHash, fmt.Errorf("unable to send stale meme reaction: %w", err)
+	}
+
+	return &videoHash, &audioHash, nil
+}
+
 func (r *UpdateHandler) handleNewPhoto(ctx context.Context, storage Storage, message *tgbotapi.Message) (*uint64, error) {
 	if len(message.Photo) == 0 {
 		return nil, nil
@@ -433,7 +505,7 @@ func (r *UpdateHandler) handleNewPhoto(ctx context.Context, storage Storage, mes
 
 	_, err = storage.GetLastMatchingMessageByImageHash(ctx, message.Chat.ID, imgHash.GetHash())
 	if err != nil && !errors.Is(err, &ErrNotFound{}) {
-		return nil, fmt.Errorf("unable to get lash matching message image hash: %w", err)
+		return ptr(imgHash.GetHash()), fmt.Errorf("unable to get lash matching message image hash: %w", err)
 	}
 	if err != nil && errors.Is(err, &ErrNotFound{}) {
 		return ptr(imgHash.GetHash()), nil
@@ -441,7 +513,7 @@ func (r *UpdateHandler) handleNewPhoto(ctx context.Context, storage Storage, mes
 
 	err = r.sendStaleMemeReaction(ctx, message.Chat.ID, message.MessageID)
 	if err != nil {
-		return nil, fmt.Errorf("unable to send stale meme reaction: %w", err)
+		return ptr(imgHash.GetHash()), fmt.Errorf("unable to send stale meme reaction: %w", err)
 	}
 
 	return ptr(imgHash.GetHash()), nil
@@ -490,6 +562,26 @@ func (r *UpdateHandler) getTelegramImage(ctx context.Context, fileID string) (im
 	}
 
 	return img, nil
+}
+
+func (r *UpdateHandler) getTelegramVideo(ctx context.Context, fileID, filePath string) error {
+	fileReader, err := r.getTelegramFile(ctx, fileID)
+	if err != nil {
+		return fmt.Errorf("unable to get telegram file: %w", err)
+	}
+	defer fileReader.Close()
+
+	file, err := os.Create(filePath)
+	if err != nil {
+		return fmt.Errorf("unable to open file: %w", err)
+	}
+
+	_, err = io.Copy(file, fileReader)
+	if err != nil {
+		return fmt.Errorf("unable to copy video into file: %w", err)
+	}
+
+	return nil
 }
 
 func (r *UpdateHandler) getTelegramFile(_ context.Context, fileID string) (io.ReadCloser, error) {

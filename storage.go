@@ -170,6 +170,8 @@ insert into message(
 	message_id,
 	data,
 	image_hash,
+	video_video_hash,
+	video_audio_hash,
 	created_at,
 	updated_at
 ) values (
@@ -179,13 +181,17 @@ insert into message(
 	$4,
 	$5,
 	$6,
-	$7
+	$7,
+	$8,
+	$9
 )
 on conflict (chat_id, message_id)
 	do update 
 		set 
 			data = excluded.data,
 			image_hash = excluded.image_hash, 
+			video_video_hash = excluded.video_video_hash, 
+			video_audio_hash = excluded.video_audio_hash, 
 			updated_at = excluded.updated_at
 returning id
 	`,
@@ -194,6 +200,8 @@ returning id
 		msg.MessageID,
 		string(data),
 		uint64PtrToInt64Ptr(msg.ImageHash),
+		uint64PtrToInt64Ptr(msg.VideoVideoHash),
+		uint64PtrToInt64Ptr(msg.VideoAudioHash),
 		msg.CreatedAt,
 		msg.UpdatedAt,
 	)
@@ -213,12 +221,14 @@ returning id
 }
 
 type messageDB struct {
-	ChatID    int64     `db:"chat_id"`
-	MessageID int       `db:"message_id"`
-	Raw       string    `db:"data"`
-	ImageHash *int64    `db:"image_hash"`
-	CreatedAt time.Time `db:"created_at"`
-	UpdatedAt time.Time `db:"updated_at"`
+	ChatID         int64     `db:"chat_id"`
+	MessageID      int       `db:"message_id"`
+	Raw            string    `db:"data"`
+	ImageHash      *int64    `db:"image_hash"`
+	VideoVideoHash *int64    `db:"video_video_hash"`
+	VideoAudioHash *int64    `db:"video_audio_hash"`
+	CreatedAt      time.Time `db:"created_at"`
+	UpdatedAt      time.Time `db:"updated_at"`
 }
 
 func messageFromDB(r messageDB) (*Message, error) {
@@ -247,6 +257,8 @@ select
 	message_id,
 	data,
 	image_hash,
+	video_video_hash,
+	video_audio_hash,
 	created_at,
 	updated_at
 from message
@@ -287,6 +299,8 @@ select
 	message_id,
 	data,
 	image_hash,
+	video_video_hash,
+	video_audio_hash,
 	created_at,
 	updated_at
 from message
@@ -330,4 +344,49 @@ func (r *storage) GetLastUpdateID(ctx context.Context) (int, error) {
 	}
 
 	return res, nil
+}
+
+func (r *storage) getMatchingMessageByVideoHash(ctx context.Context, chatID int64, videoHash uint64, audioHash uint64, order string) (*Message, error) {
+	var res []messageDB
+
+	err := r.db.SelectContext(ctx, &res, `
+select 
+	chat_id,
+	message_id,
+	data,
+	image_hash,
+	video_video_hash,
+	video_audio_hash,
+	created_at,
+	updated_at
+from message
+where video_video_hash <@ ($1, 11)
+	and video_video_hash is not null
+	and video_audio_hash <@ ($2, 11)
+	and video_audio_hash is not null
+	and chat_id = $3
+order by created_at `+order+` 
+limit 1
+`,
+		int64(videoHash),
+		int64(audioHash),
+		chatID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("unable to select message by image hash: %w", err)
+	}
+
+	if len(res) == 0 {
+		return nil, &ErrNotFound{}
+	}
+
+	return messageFromDB(res[0])
+}
+
+func (r *storage) GetFirstMatchingMessageByVideoHash(ctx context.Context, chatID int64, videoHash, audioHash uint64) (*Message, error) {
+	return r.getMatchingMessageByVideoHash(ctx, chatID, videoHash, audioHash, "asc")
+}
+
+func (r *storage) GetLastMatchingMessageByVideoHash(ctx context.Context, chatID int64, videoHash, audioHash uint64) (*Message, error) {
+	return r.getMatchingMessageByVideoHash(ctx, chatID, videoHash, audioHash, "desc")
 }

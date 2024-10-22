@@ -1,13 +1,17 @@
-module kek
+module github.com/NinaLeven/MemePolice
 
-go 1.23.1
+go 1.23.2
 
 require (
 	github.com/corona10/goimagehash v1.1.0
+	github.com/go-fingerprint/fingerprint v0.0.0-20140803133125-29397256b7ff
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
+	github.com/google/uuid v1.6.0
 	github.com/jmoiron/sqlx v1.4.0
+	github.com/jo-hoe/chromaprint v0.0.0-20240816145029-ca31e331519d
 	github.com/lib/pq v1.10.9
 	github.com/pressly/goose/v3 v3.22.1
+	golang.org/x/image v0.21.0
 )
 
 require (

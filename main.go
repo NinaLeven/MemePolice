@@ -9,6 +9,10 @@ import (
 	"os"
 	"os/signal"
 
+	"github.com/NinaLeven/MemePolice/videohash"
+
+	"github.com/corona10/goimagehash"
+
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
@@ -61,4 +65,29 @@ func main() {
 	}
 
 	cancel()
+}
+
+func main1() {
+	if len(os.Args) < 2 {
+		log.Fatalln("provide video path")
+	}
+
+	vh1, ah1, err := videohash.PerceptualHash(os.Args[1])
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	vh2, ah2, err := videohash.PerceptualHash(os.Args[2])
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	fmt.Println("video: ", hashDistance(vh1, vh2))
+	fmt.Println("audio: ", hashDistance(ah1, ah2))
+	fmt.Println("combined: ", hashDistance(vh1^ah1, vh2^ah2))
+}
+
+func hashDistance(a, b uint64) int {
+	res, _ := goimagehash.NewImageHash(a, goimagehash.PHash).Distance(goimagehash.NewImageHash(b, goimagehash.PHash))
+	return res
 }
