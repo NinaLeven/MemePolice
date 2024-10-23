@@ -136,8 +136,10 @@ func (r *UpdateHandler) OneTimeMigration(ctx context.Context, dataDirectoryPath 
 		return data.Messages, nil
 	}
 
+	const fileTooBig = "(File exceeds maximum size. Change data exporting settings to download.)"
+
 	getPhotoHash := func(pth string) (*uint64, error) {
-		if pth == "" {
+		if pth == "" || pth == fileTooBig {
 			return nil, nil
 		}
 
@@ -161,7 +163,7 @@ func (r *UpdateHandler) OneTimeMigration(ctx context.Context, dataDirectoryPath 
 	}
 
 	getVideoHash := func(mediaType, pth string) (*uint64, *uint64, error) {
-		if pth == "" || mediaType != "video_file" {
+		if pth == "" || mediaType != "video_file" || pth == fileTooBig {
 			return nil, nil, nil
 		}
 
@@ -239,6 +241,7 @@ func (r *UpdateHandler) OneTimeMigration(ctx context.Context, dataDirectoryPath 
 			slog.InfoContext(ctx, "processing message", slog.Int("i", i), slog.Int64("message_id", (msg.ID)))
 			err := processMessage(ctx, storage, msg)
 			if err != nil {
+				slog.ErrorContext(ctx, "unable to process message", slog.Any("msg", msg))
 				return err
 			}
 		}

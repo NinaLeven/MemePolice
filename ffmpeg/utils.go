@@ -115,7 +115,7 @@ func ExtractFrames(videoPath, framesDir string, expectedFramesCount int) ([]stri
 }
 
 func ExtractAudio(videoPath, audioPath string) error {
-	stdout, err := runCmd("ffmpeg", "-i", videoPath, "-q:a", "0", "-map", "a", audioPath)
+	stdout, err := runCmd("ffmpeg", "-i", videoPath, "-q:a", "0", "-map", "a" /*"-vn", "-acodec", "mp3",*/, audioPath)
 	if err != nil {
 		return fmt.Errorf("unable to run ffmpeg: %w: %s", err, stdout)
 	}
@@ -134,10 +134,10 @@ func getAudioLen(audioPath string) (int, error) {
 		return 0, fmt.Errorf("unable to parse seconds count: %w", err)
 	}
 
-	return int(math.Floor(secondsCount)), nil
+	return int(math.Ceil(secondsCount)), nil
 }
 
-const maxPddingSeconds = 5
+const maxPddingSeconds = 3
 
 func PadAudioWithSilence(inputAudioPath, outputAudioPath string) error {
 	audioLen, err := getAudioLen(inputAudioPath)
@@ -145,15 +145,11 @@ func PadAudioWithSilence(inputAudioPath, outputAudioPath string) error {
 		return fmt.Errorf("unable to get audio length: %w", err)
 	}
 
-	if audioLen >= maxPddingSeconds {
-		err := fsutils.CP(inputAudioPath, outputAudioPath)
-		if err != nil {
-			return fmt.Errorf("unable to cp input file as no padding was needed: %w", err)
-		}
-		return nil
+	if audioLen < maxPddingSeconds {
+		audioLen = maxPddingSeconds
 	}
 
-	stdout, err := runCmd("ffmpeg", "-i", inputAudioPath, "-af", "apad", "-t", strconv.Itoa(maxPddingSeconds-audioLen), outputAudioPath)
+	stdout, err := runCmd("ffmpeg", "-i", inputAudioPath, "-af", "apad,atrim=end="+strconv.Itoa(audioLen) /*"-t", strconv.Itoa(maxPddingSeconds-audioLen),*/, outputAudioPath)
 	if err != nil {
 		return fmt.Errorf("unable to run ffmpeg: %w: %s", err, stdout)
 	}

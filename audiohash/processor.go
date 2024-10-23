@@ -9,6 +9,7 @@ import (
 	"github.com/NinaLeven/MemePolice/fsutils"
 	"github.com/corona10/goimagehash"
 	"github.com/go-fingerprint/fingerprint"
+	"github.com/google/uuid"
 	"github.com/jo-hoe/chromaprint"
 )
 
@@ -28,7 +29,7 @@ func PerceptualHash(audioPath string) (uint64, error) {
 }
 
 func perceptualAudioHash(tempDir, audioPath string) (uint64, error) {
-	tempAudioPath := path.Join(tempDir, path.Base(audioPath)+".temp.mp3")
+	tempAudioPath := path.Join(tempDir, uuid.NewString()+".mp3")
 
 	err := ffmpeg.PadAudioWithSilence(audioPath, tempAudioPath)
 	if err != nil {
@@ -37,6 +38,8 @@ func perceptualAudioHash(tempDir, audioPath string) (uint64, error) {
 
 	proc, err := chromaprint.NewBuilder().
 		WithPathToChromaprint(os.Getenv("FPCALC_PATH")).
+		WithOverlap(true).
+		WithMaxFingerPrintLength(60).
 		Build()
 	if err != nil {
 		return 0, fmt.Errorf("unable to create new builder: %w", err)
