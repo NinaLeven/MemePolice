@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	_ "image/jpeg"
@@ -99,7 +101,9 @@ func (t *text) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-func (r *UpdateHandler) OneTimeMigration(ctx context.Context, dataDirectoryPath string) error {
+const MemalnyaChatID int64 = -1001960713646
+
+func (r *UpdateHandler) OneTimeMigration(ctx context.Context, dataDirectoryPath string, chatID int64) error {
 	type message struct {
 		ID        int64  `json:"id"`
 		Type      string `json:"type"`
@@ -107,7 +111,8 @@ func (r *UpdateHandler) OneTimeMigration(ctx context.Context, dataDirectoryPath 
 		FromName  string `json:"from"`
 		FromID    string `json:"from_id"`
 		PhotoPath string `json:"photo"`
-		VideoPath string `json:"video"`
+		MediaType string `json:"media_type"`
+		FilePath  string `json:"file"`
 		Text      text   `json:"text"`
 	}
 	type dump struct {
@@ -155,12 +160,12 @@ func (r *UpdateHandler) OneTimeMigration(ctx context.Context, dataDirectoryPath 
 		return ptr(imgHash.GetHash()), nil
 	}
 
-	getVideoHash := func(pth string) (*uint64, *uint64, error) {
-		if pth == "" {
+	getVideoHash := func(mediaType, pth string) (*uint64, *uint64, error) {
+		if pth == "" || mediaType != "video_file" {
 			return nil, nil, nil
 		}
 
-		vHash, aHash, err := videohash.PerceptualHash(pth)
+		vHash, aHash, err := videohash.PerceptualHash(path.Join(dataDirectoryPath, pth))
 		if err != nil {
 			return nil, nil, fmt.Errorf("unable to get video perceptual hash: %w", err)
 		}
@@ -178,7 +183,7 @@ func (r *UpdateHandler) OneTimeMigration(ctx context.Context, dataDirectoryPath 
 			return fmt.Errorf("unable to photo hash: %w", err)
 		}
 
-		vvHash, vaHash, err := getVideoHash(msg.VideoPath)
+		vvHash, vaHash, err := getVideoHash(msg.MediaType, msg.FilePath)
 		if err != nil {
 			return fmt.Errorf("unable to get video hash: %w", err)
 		}
@@ -197,10 +202,10 @@ func (r *UpdateHandler) OneTimeMigration(ctx context.Context, dataDirectoryPath 
 
 		cerr := storage.UpsertMessage(ctx, Message{
 			MessageID: int(msg.ID),
-			ChatID:    -1001960713646,
+			ChatID:    chatID,
 			Raw: tgbotapi.Message{
 				Chat: &tgbotapi.Chat{
-					ID: -1001960713646,
+					ID: chatID,
 				},
 				From: &tgbotapi.User{
 					ID: userId,
@@ -306,6 +311,73 @@ func (r *UpdateHandler) handleUpdate(ctx context.Context, update tgbotapi.Update
 	return nil
 }
 
+func (r *UpdateHandler) LiveChat(ctx context.Context, chatID int64) {
+	var closed int32
+
+	go func() {
+		<-ctx.Done()
+		atomic.StoreInt32(&closed, 1)
+	}()
+
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		err := r.sendMessage(ctx, chatID, scanner.Text())
+		if err != nil {
+			slog.ErrorContext(ctx, "unable to send message", slog.String("err", err.Error()))
+		}
+
+		if atomic.LoadInt32(&closed) == 1 {
+			return
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		slog.ErrorContext(ctx, "unable to read stdin: %w", err)
+	}
+}
+
+func (r *UpdateHandler) sendMessage(ctx context.Context,
+	chatID int64,
+	text string,
+) error {
+	voice := tgbotapi.NewMessage(chatID, text)
+
+	_, err := r.bot.Send(voice)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return &ErrNotFound{
+				Err: fmt.Errorf("unable to send text message: %w", err),
+			}
+		}
+		return fmt.Errorf("unable to send text message: %w", err)
+	}
+
+	return nil
+}
+
+func (r *UpdateHandler) sendVoiceMessage(ctx context.Context,
+	chatID int64,
+	name string,
+	data []byte,
+) error {
+	voice := tgbotapi.NewVoice(chatID, tgbotapi.FileBytes{
+		Name:  name,
+		Bytes: data,
+	})
+
+	_, err := r.bot.Send(voice)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return &ErrNotFound{
+				Err: fmt.Errorf("unable to send text message: %w", err),
+			}
+		}
+		return fmt.Errorf("unable to send audio message: %w", err)
+	}
+
+	return nil
+}
+
 func (r *UpdateHandler) handleMessage(ctx context.Context, storage Storage, message *tgbotapi.Message) error {
 	err := r.handleWhyCommand(ctx, storage, message)
 	if err != nil {
@@ -353,6 +425,7 @@ func (r *UpdateHandler) handleWhyCommand(ctx context.Context, storage Storage, m
 	}
 
 	repeatedMsg, err := storage.GetMessage(ctx, message.Chat.ID, message.ReplyToMessage.MessageID)
+	slog.InfoContext(ctx, "repeated_msg", slog.Any("err", err), slog.Any("repeated_msg", repeatedMsg))
 	if err != nil && !errors.Is(err, &ErrNotFound{}) {
 		return fmt.Errorf("unable to get message hash by id: %w", err)
 	}
@@ -380,6 +453,7 @@ func (r *UpdateHandler) handleWhyCommand(ctx context.Context, storage Storage, m
 		}
 		return nil
 	}
+	slog.InfoContext(ctx, "orig_msg", slog.Any("err", err), slog.Any("orig_msg", origMsg))
 	if err != nil && !errors.Is(err, &ErrNotFound{}) {
 		return fmt.Errorf("unable to get first matching message image hash: %w", err)
 	}
@@ -403,6 +477,7 @@ func (r *UpdateHandler) handleWhyCommand(ctx context.Context, storage Storage, m
 		return fmt.Errorf("unable to reply with text: %w", err)
 	}
 	if err != nil && errors.Is(err, &ErrNotFound{}) {
+		slog.WarnContext(ctx, "error sending reply", slog.String("err", err.Error()))
 		err = r.sendVoiceMessageReply(ctx, message.Chat.ID, message.MessageID, "message_deleted", r.assets.GetAudioMessageDeleted())
 		if err != nil {
 			return fmt.Errorf("unable to send message_deleted voice message %w", err)
