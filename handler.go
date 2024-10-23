@@ -425,7 +425,6 @@ func (r *UpdateHandler) handleWhyCommand(ctx context.Context, storage Storage, m
 	}
 
 	repeatedMsg, err := storage.GetMessage(ctx, message.Chat.ID, message.ReplyToMessage.MessageID)
-	slog.InfoContext(ctx, "repeated_msg", slog.Any("err", err), slog.Any("repeated_msg", repeatedMsg))
 	if err != nil && !errors.Is(err, &ErrNotFound{}) {
 		return fmt.Errorf("unable to get message hash by id: %w", err)
 	}
@@ -453,7 +452,6 @@ func (r *UpdateHandler) handleWhyCommand(ctx context.Context, storage Storage, m
 		}
 		return nil
 	}
-	slog.InfoContext(ctx, "orig_msg", slog.Any("err", err), slog.Any("orig_msg", origMsg))
 	if err != nil && !errors.Is(err, &ErrNotFound{}) {
 		return fmt.Errorf("unable to get first matching message image hash: %w", err)
 	}
@@ -477,7 +475,11 @@ func (r *UpdateHandler) handleWhyCommand(ctx context.Context, storage Storage, m
 		return fmt.Errorf("unable to reply with text: %w", err)
 	}
 	if err != nil && errors.Is(err, &ErrNotFound{}) {
-		slog.WarnContext(ctx, "error sending reply", slog.String("err", err.Error()))
+		slog.WarnContext(ctx, "error sending reply",
+			slog.String("err", err.Error()),
+			slog.Any("repeated_msg", repeatedMsg),
+			slog.Any("orig_msg", origMsg),
+		)
 		err = r.sendVoiceMessageReply(ctx, message.Chat.ID, message.MessageID, "message_deleted", r.assets.GetAudioMessageDeleted())
 		if err != nil {
 			return fmt.Errorf("unable to send message_deleted voice message %w", err)
