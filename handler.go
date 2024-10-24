@@ -187,7 +187,7 @@ func (r *UpdateHandler) OneTimeMigration(ctx context.Context, dataDirectoryPath 
 
 		vvHash, vaHash, err := getVideoHash(msg.MediaType, msg.FilePath)
 		if err != nil {
-			return fmt.Errorf("unable to get video hash: %w", err)
+			slog.ErrorContext(ctx, "unable to get video hash", slog.String("err", err.Error()))
 		}
 
 		userId, err := strconv.ParseInt(strings.TrimPrefix(msg.FromID, "user"), 10, 64)
