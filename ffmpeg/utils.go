@@ -115,7 +115,7 @@ func ExtractFrames(videoPath, framesDir string, expectedFramesCount int) ([]stri
 }
 
 func ExtractAudio(videoPath, audioPath string) error {
-	stdout, err := runCmd("ffmpeg", "-i", videoPath, "-q:a", "0", "-map", "a" /*"-vn", "-acodec", "mp3",*/, audioPath)
+	stdout, err := runCmd("ffmpeg", "-i", videoPath, "-q:a", "0", "-map", "a?" /*"-vn", "-acodec", "mp3",*/, audioPath)
 	if err != nil {
 		return fmt.Errorf("unable to run ffmpeg: %w: %s", err, stdout)
 	}
