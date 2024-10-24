@@ -295,6 +295,12 @@ func (r *UpdateHandler) handleUpdate(ctx context.Context, update tgbotapi.Update
 				return fmt.Errorf("unable to handle message: %w", err)
 			}
 
+		case update.EditedMessage != nil:
+			err := r.handleMessage(ctx, storage, update.EditedMessage)
+			if err != nil {
+				return fmt.Errorf("unable to handle edited message: %w", err)
+			}
+
 		default:
 			slog.WarnContext(ctx, "unknown update", slog.Any("update", update))
 			// more actions coming
