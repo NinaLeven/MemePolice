@@ -45,6 +45,8 @@ type PSQLStorageManager struct {
 func NewPSQLStorageManager(ctx context.Context,
 	purl string,
 	migrationsDir string,
+	imageDistance int,
+	videoDistance int,
 ) (*PSQLStorageManager, error) {
 	db, err := sql.Open("postgres", purl)
 	if err != nil {
@@ -61,7 +63,9 @@ func NewPSQLStorageManager(ctx context.Context,
 	return &PSQLStorageManager{
 		db: dbx,
 		storage: &storage{
-			db: dbx,
+			db:            dbx,
+			imageDistance: imageDistance,
+			videoDistance: videoDistance,
 		},
 	}, nil
 }
@@ -72,6 +76,15 @@ func (r *PSQLStorageManager) Close() error {
 		return fmt.Errorf("unable to close db: %w", err)
 	}
 	return nil
+}
+
+func (r *PSQLStorageManager) createStorage(db querier) *storage {
+	return &storage{
+		db: db,
+
+		imageDistance: r.imageDistance,
+		videoDistance: r.videoDistance,
+	}
 }
 
 func (r *PSQLStorageManager) ExecWithTx(ctx context.Context, handler func(ctx context.Context, storage Storage) error) error {
@@ -99,7 +112,9 @@ func (r *PSQLStorageManager) ExecWithTx(ctx context.Context, handler func(ctx co
 		}
 	}()
 
-	err = handler(ctx, &storage{db: tx})
+	storage := r.createStorage(tx)
+
+	err = handler(ctx, storage)
 	if err != nil {
 		return fmt.Errorf("tx handler error: %w", err)
 	}
@@ -121,6 +136,9 @@ type querier interface {
 
 type storage struct {
 	db querier
+
+	imageDistance int
+	videoDistance int
 }
 
 func (r *storage) getNewMessageID(ctx context.Context) (int64, error) {
@@ -264,13 +282,14 @@ select
 	created_at,
 	updated_at
 from message
-where image_hash <@ ($1, 6)
+where image_hash <@ ($1, $2)
 	and image_hash is not null
-	and chat_id = $2
+	and chat_id = $3
 order by created_at `+order+` 
 limit 1
 `,
 		int64(hash),
+		r.imageDistance,
 		chatID,
 	)
 	if err != nil {
@@ -362,16 +381,17 @@ select
 	created_at,
 	updated_at
 from message
-where video_video_hash <@ ($1, 11)
+where video_video_hash <@ ($1, $3)
 	and video_video_hash is not null
-	and video_audio_hash <@ ($2, 11)
+	and video_audio_hash <@ ($2, $3)
 	and video_audio_hash is not null
-	and chat_id = $3
+	and chat_id = $4
 order by created_at `+order+` 
 limit 1
 `,
 		int64(videoHash),
 		int64(audioHash),
+		r.videoDistance,
 		chatID,
 	)
 	if err != nil {

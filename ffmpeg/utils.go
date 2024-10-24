@@ -114,9 +114,30 @@ func ExtractFrames(videoPath, framesDir string, expectedFramesCount int) ([]stri
 	return frames, nil
 }
 
+type ErrNoAudio struct {
+	Err error
+}
+
+func (e *ErrNoAudio) Error() string {
+	if e.Err == nil {
+		return "no audio"
+	}
+	return fmt.Sprintf("no audio: %s", e.Err.Error())
+}
+
+func (e *ErrNoAudio) Is(target error) bool {
+	_, ok := target.(*ErrNoAudio)
+	return ok
+}
+
 func ExtractAudio(videoPath, audioPath string) error {
 	stdout, err := runCmd("ffmpeg", "-i", videoPath, "-q:a", "0", "-map", "a?" /*"-vn", "-acodec", "mp3",*/, audioPath)
 	if err != nil {
+		if strings.Contains(err.Error(), "does not contain any stream") {
+			return &ErrNoAudio{
+				Err: err,
+			}
+		}
 		return fmt.Errorf("unable to run ffmpeg: %w: %s", err, stdout)
 	}
 

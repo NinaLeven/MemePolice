@@ -28,6 +28,9 @@ func main() {
 	dumpDirPath := flag.String("d", "", "path to dump directory")
 	postgresURL := flag.String("p", "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable", "postgres url")
 	liveChat := flag.Bool("c", false, "enable live memalnya chat")
+	imageDistance := flag.Int("i", 6, "hamming distance for matching images")
+	videoDistance := flag.Int("v", 11, "hamming distance for matching videos")
+
 	flag.Parse()
 
 	bot, err := tgbotapi.NewBotAPI(os.Getenv("BOT_TOKEN"))
@@ -41,7 +44,7 @@ func main() {
 		log.Panic(err)
 	}
 
-	psqlStorage, err := NewPSQLStorageManager(ctx, *postgresURL, *migrationsDirPath)
+	psqlStorage, err := NewPSQLStorageManager(ctx, *postgresURL, *migrationsDirPath, *imageDistance, *videoDistance)
 	if err != nil {
 		log.Panic(err)
 	}

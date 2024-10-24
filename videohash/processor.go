@@ -1,8 +1,10 @@
 package videohash
 
 import (
+	"errors"
 	"fmt"
 	"image"
+	"log/slog"
 	"os"
 	"path"
 
@@ -37,8 +39,12 @@ func perceptualAudioHash(tempDir, videoPath string) (uint64, error) {
 	audioPath := path.Join(tempDir, path.Base(videoPath)+".mp3")
 
 	err := ffmpeg.ExtractAudio(videoPath, audioPath)
-	if err != nil {
+	if err != nil && !errors.Is(err, &ffmpeg.ErrNoAudio{}) {
 		return 0, fmt.Errorf("unable to extract audio: %w", err)
+	}
+	if err != nil && errors.Is(err, &ffmpeg.ErrNoAudio{}) {
+		slog.Warn("no audio", slog.String("err", err.Error()))
+		return 0, nil
 	}
 
 	h, err := audiohash.PerceptualHash(audioPath)
