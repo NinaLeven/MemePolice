@@ -133,7 +133,7 @@ func (e *ErrNoAudio) Is(target error) bool {
 func ExtractAudio(videoPath, audioPath string) error {
 	stdout, err := runCmd("ffmpeg", "-i", videoPath, "-q:a", "0", "-map", "a?" /*"-vn", "-acodec", "mp3",*/, audioPath)
 	if err != nil {
-		if strings.Contains(err.Error(), "does not contain any stream") {
+		if strings.Contains(stdout, "does not contain any stream") {
 			return &ErrNoAudio{
 				Err: err,
 			}
