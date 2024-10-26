@@ -296,10 +296,11 @@ func (r *UpdateHandler) handleUpdate(ctx context.Context, update tgbotapi.Update
 			}
 
 		case update.EditedMessage != nil:
-			err := r.handleMessage(ctx, storage, update.EditedMessage)
-			if err != nil {
-				return fmt.Errorf("unable to handle edited message: %w", err)
-			}
+			// err := r.handleMessage(ctx, storage, update.EditedMessage)
+			// if err != nil {
+			// 	return fmt.Errorf("unable to handle edited message: %w", err)
+			// }
+			slog.InfoContext(ctx, "edited message", slog.Any("edited_msg", update.EditedMessage))
 
 		default:
 			slog.WarnContext(ctx, "unknown update", slog.Any("update", update))
@@ -580,11 +581,11 @@ func (r *UpdateHandler) handleNewVideo(ctx context.Context, storage Storage, mes
 		return nil, nil, fmt.Errorf("unable to calculate video perception hash: %w", err)
 	}
 
-	_, err = storage.GetLastMatchingMessageByVideoHash(ctx, message.Chat.ID, videoHash, audioHash)
+	origMessage, err := storage.GetLastMatchingMessageByVideoHash(ctx, message.Chat.ID, videoHash, audioHash)
 	if err != nil && !errors.Is(err, &ErrNotFound{}) {
 		return &videoHash, &audioHash, fmt.Errorf("unable to get lash matching message video hash: %w", err)
 	}
-	if err != nil && errors.Is(err, &ErrNotFound{}) {
+	if err != nil && errors.Is(err, &ErrNotFound{}) || origMessage.MessageID == message.MessageID {
 		return &videoHash, &audioHash, nil
 	}
 
@@ -614,11 +615,11 @@ func (r *UpdateHandler) handleNewPhoto(ctx context.Context, storage Storage, mes
 		return nil, fmt.Errorf("unable to calculate image perception hash: %w", err)
 	}
 
-	_, err = storage.GetLastMatchingMessageByImageHash(ctx, message.Chat.ID, imgHash.GetHash())
+	origMessage, err := storage.GetLastMatchingMessageByImageHash(ctx, message.Chat.ID, imgHash.GetHash())
 	if err != nil && !errors.Is(err, &ErrNotFound{}) {
 		return ptr(imgHash.GetHash()), fmt.Errorf("unable to get lash matching message image hash: %w", err)
 	}
-	if err != nil && errors.Is(err, &ErrNotFound{}) {
+	if err != nil && errors.Is(err, &ErrNotFound{}) || origMessage.MessageID == message.MessageID {
 		return ptr(imgHash.GetHash()), nil
 	}
 
