@@ -581,7 +581,7 @@ func (r *UpdateHandler) handleNewVideo(ctx context.Context, storage Storage, mes
 		return nil, nil, fmt.Errorf("unable to calculate video perception hash: %w", err)
 	}
 
-	origMessage, err := storage.GetLastMatchingMessageByVideoHash(ctx, message.Chat.ID, videoHash, audioHash)
+	origMessage, err := storage.GetFirstMatchingMessageByVideoHash(ctx, message.Chat.ID, videoHash, audioHash)
 	if err != nil && !errors.Is(err, &ErrNotFound{}) {
 		return &videoHash, &audioHash, fmt.Errorf("unable to get lash matching message video hash: %w", err)
 	}
@@ -592,6 +592,11 @@ func (r *UpdateHandler) handleNewVideo(ctx context.Context, storage Storage, mes
 	err = r.sendStaleMemeReaction(ctx, message.Chat.ID, message.MessageID)
 	if err != nil {
 		return &videoHash, &audioHash, fmt.Errorf("unable to send stale meme reaction: %w", err)
+	}
+
+	err = r.sendMessageReply(ctx, message.Chat.ID, origMessage.MessageID, ".")
+	if err != nil {
+		return &videoHash, &audioHash, fmt.Errorf("unable to send stale meme reply: %w", err)
 	}
 
 	return &videoHash, &audioHash, nil
@@ -615,7 +620,7 @@ func (r *UpdateHandler) handleNewPhoto(ctx context.Context, storage Storage, mes
 		return nil, fmt.Errorf("unable to calculate image perception hash: %w", err)
 	}
 
-	origMessage, err := storage.GetLastMatchingMessageByImageHash(ctx, message.Chat.ID, imgHash.GetHash())
+	origMessage, err := storage.GetFirstMatchingMessageByImageHash(ctx, message.Chat.ID, imgHash.GetHash())
 	if err != nil && !errors.Is(err, &ErrNotFound{}) {
 		return ptr(imgHash.GetHash()), fmt.Errorf("unable to get lash matching message image hash: %w", err)
 	}
@@ -626,6 +631,11 @@ func (r *UpdateHandler) handleNewPhoto(ctx context.Context, storage Storage, mes
 	err = r.sendStaleMemeReaction(ctx, message.Chat.ID, message.MessageID)
 	if err != nil {
 		return ptr(imgHash.GetHash()), fmt.Errorf("unable to send stale meme reaction: %w", err)
+	}
+
+	err = r.sendMessageReply(ctx, message.Chat.ID, origMessage.MessageID, ".")
+	if err != nil {
+		return ptr(imgHash.GetHash()), fmt.Errorf("unable to send stale meme reply: %w", err)
 	}
 
 	return ptr(imgHash.GetHash()), nil
