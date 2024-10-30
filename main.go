@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -28,7 +29,7 @@ func main() {
 	dumpDirPath := flag.String("d", "", "path to dump directory")
 	postgresURL := flag.String("p", "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable", "postgres url")
 	liveChat := flag.Bool("c", false, "enable live memalnya chat")
-	imageDistance := flag.Int("i", 6, "hamming distance for matching images")
+	imageDistance := flag.Int("i", 3, "hamming distance for matching images")
 	videoDistance := flag.Int("v", 11, "hamming distance for matching videos")
 
 	flag.Parse()
@@ -69,4 +70,5 @@ func main() {
 	}
 
 	cancel()
+	time.Sleep(time.Second * 2)
 }

@@ -480,7 +480,7 @@ func (r *UpdateHandler) handleWhyCommand(ctx context.Context, storage Storage, m
 		return nil
 	}
 
-	err = r.sendMessageReply(ctx, message.Chat.ID, origMsg.MessageID, ".")
+	_, err = r.sendMessageReply(ctx, message.Chat.ID, origMsg.MessageID, ".")
 	if err != nil && !errors.Is(err, &ErrNotFound{}) {
 		return fmt.Errorf("unable to reply with text: %w", err)
 	}
@@ -529,22 +529,24 @@ func (r *UpdateHandler) sendMessageReply(ctx context.Context,
 	chatID int64,
 	replyToMessageID int,
 	text string,
-) error {
+) (int, error) {
 	voice := tgbotapi.NewMessage(chatID, text)
 	voice.ReplyToMessageID = replyToMessageID
 
-	_, err := r.bot.Send(voice)
+	msg, err := r.bot.Send(voice)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
-			return &ErrNotFound{
+			return 0, &ErrNotFound{
 				Err: fmt.Errorf("unable to send text message: %w", err),
 			}
 		}
-		return fmt.Errorf("unable to send text message: %w", err)
+		return 0, fmt.Errorf("unable to send text message: %w", err)
 	}
 
-	return nil
+	return msg.MessageID, nil
 }
+
+const deleteAutoReplyTimeout = time.Hour
 
 func (r *UpdateHandler) handleNewVideo(ctx context.Context, storage Storage, message *tgbotapi.Message) (*uint64, *uint64, error) {
 	if message.Video == nil {
@@ -594,10 +596,21 @@ func (r *UpdateHandler) handleNewVideo(ctx context.Context, storage Storage, mes
 		return &videoHash, &audioHash, fmt.Errorf("unable to send stale meme reaction: %w", err)
 	}
 
-	err = r.sendMessageReply(ctx, message.Chat.ID, origMessage.MessageID, ".")
+	replyID, err := r.sendMessageReply(ctx, message.Chat.ID, origMessage.MessageID, ".")
 	if err != nil {
 		return &videoHash, &audioHash, fmt.Errorf("unable to send stale meme reply: %w", err)
 	}
+
+	go func() {
+		select {
+		case <-time.After(deleteAutoReplyTimeout):
+		case <-ctx.Done():
+		}
+		err := r.deleteMessage(ctx, message.Chat.ID, replyID)
+		if err != nil {
+			slog.ErrorContext(ctx, "unable to delete reply", slog.String("err", err.Error()))
+		}
+	}()
 
 	return &videoHash, &audioHash, nil
 }
@@ -633,10 +646,21 @@ func (r *UpdateHandler) handleNewPhoto(ctx context.Context, storage Storage, mes
 		return ptr(imgHash.GetHash()), fmt.Errorf("unable to send stale meme reaction: %w", err)
 	}
 
-	err = r.sendMessageReply(ctx, message.Chat.ID, origMessage.MessageID, ".")
+	replyID, err := r.sendMessageReply(ctx, message.Chat.ID, origMessage.MessageID, ".")
 	if err != nil {
 		return ptr(imgHash.GetHash()), fmt.Errorf("unable to send stale meme reply: %w", err)
 	}
+
+	go func() {
+		select {
+		case <-time.After(deleteAutoReplyTimeout):
+		case <-ctx.Done():
+		}
+		err := r.deleteMessage(ctx, message.Chat.ID, replyID)
+		if err != nil {
+			slog.ErrorContext(ctx, "unable to delete reply", slog.String("err", err.Error()))
+		}
+	}()
 
 	return ptr(imgHash.GetHash()), nil
 }
@@ -720,4 +744,22 @@ func (r *UpdateHandler) getTelegramFile(_ context.Context, fileID string) (io.Re
 	}
 
 	return resp.Body, nil
+}
+
+func (r *UpdateHandler) deleteMessage(_ context.Context, chatID int64, messageID int) error {
+	params := tgbotapi.Params{
+		"chat_id":    strconv.FormatInt(chatID, 10),
+		"message_id": strconv.Itoa(messageID),
+	}
+
+	resp, err := r.bot.MakeRequest("deleteMessage", params)
+	if err != nil {
+		return fmt.Errorf("unable to make deleteMessage request: %w", err)
+	}
+
+	if !resp.Ok {
+		return fmt.Errorf("error making deleteMessage reqeust: error_code: %d", resp.ErrorCode)
+	}
+
+	return nil
 }
