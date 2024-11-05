@@ -412,3 +412,219 @@ func (r *storage) GetFirstMatchingMessageByVideoHash(ctx context.Context, chatID
 func (r *storage) GetLastMatchingMessageByVideoHash(ctx context.Context, chatID int64, videoHash, audioHash uint64) (*Message, error) {
 	return r.getMatchingMessageByVideoHash(ctx, chatID, videoHash, audioHash, "desc")
 }
+
+func (r *storage) CreateTopkek(ctx context.Context, tk Topkek) (int64, error) {
+	var id int64
+
+	err := r.db.GetContext(ctx, &id, `
+insert into topkek(
+	name,
+	chat_id,
+	author_id,
+	created_at,
+	status
+) values (
+	$1,
+	$2,
+	$3,
+	$4,
+	$5
+)
+returning id
+	`,
+		tk.Name,
+		tk.ChatID,
+		tk.AuthorID,
+		tk.CreatedAt,
+		tk.Status,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("unable to insert topkek: %w", err)
+	}
+
+	return id, nil
+}
+
+func (r *storage) UpdateTopkekStatus(ctx context.Context, id int64, status TopkekStatus) error {
+	_, err := r.db.ExecContext(ctx, `
+update topkek 
+set status = $2
+where id = $1
+	`,
+		id,
+		status,
+	)
+	if err != nil {
+		return fmt.Errorf("unable to update topkek status: %w", err)
+	}
+
+	return nil
+}
+
+func (r *storage) GetLastTopkek(ctx context.Context, chatID int64) (*Topkek, error) {
+	var res []Topkek
+
+	err := r.db.SelectContext(ctx, &res, `
+select 
+	id,
+	name,
+	chat_id,
+	author_id,
+	created_at,
+	status
+from topkek
+where chat_id = $1
+order by id desc
+limit 1
+`,
+		chatID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("unable to select topkek: %w", err)
+	}
+
+	if len(res) == 0 {
+		return nil, &ErrNotFound{}
+	}
+
+	return &res[0], nil
+}
+
+func (r *storage) GetTopkek(ctx context.Context, topkekID int64) (*Topkek, error) {
+	var res []Topkek
+
+	err := r.db.SelectContext(ctx, &res, `
+select 
+	id,
+	name,
+	chat_id,
+	author_id,
+	created_at,
+	status
+from topkek
+where id = $1
+`,
+		topkekID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("unable to select topkek: %w", err)
+	}
+
+	if len(res) == 0 {
+		return nil, &ErrNotFound{}
+	}
+
+	return &res[0], nil
+}
+
+func (r *storage) CreateTopkekMessage(ctx context.Context, msg TopkekMessage) error {
+	raw, err := json.Marshal(msg.Raw)
+	if err != nil {
+		return fmt.Errorf("unable to marshal raw msg: %w", err)
+	}
+
+	var id int64
+
+	err = r.db.GetContext(ctx, &id, `
+insert into topkek_message(
+	topkek_id,
+	chat_id,
+	message_id,
+	type,
+	raw
+) values (
+	$1,
+	$2,
+	$3,
+	$4,
+	$5
+)
+returning id
+	`,
+		msg.TopkekID,
+		msg.ChatID,
+		msg.MessageID,
+		string(msg.Type),
+		string(raw),
+	)
+	if err != nil {
+		return fmt.Errorf("unable to insert topkek message: %w", err)
+	}
+
+	return nil
+}
+
+type topkekMessageDB struct {
+	TopkekID  int64  `db:"topkek_id"`
+	ChatID    int64  `db:"chat_id"`
+	MessageID int    `db:"message_id"`
+	Type      string `db:"type"`
+	Raw       string `db:"raw"`
+}
+
+func topkekMessageFromDB(r topkekMessageDB) (*TopkekMessage, error) {
+	var data tgbotapi.Message
+	err := json.Unmarshal([]byte(r.Raw), &data)
+	if err != nil {
+		return nil, fmt.Errorf("unable to unmarshal raw msg: %w", err)
+	}
+
+	return &TopkekMessage{
+		TopkekID:  r.TopkekID,
+		ChatID:    r.ChatID,
+		MessageID: r.MessageID,
+		Type:      TopkekMessageType(r.Type),
+		Raw:       data,
+	}, nil
+}
+
+func topkekMessagesFromDB(r []topkekMessageDB) ([]TopkekMessage, error) {
+	res := make([]TopkekMessage, 0, len(r))
+
+	for _, msg := range r {
+		rr, err := topkekMessageFromDB(msg)
+		if err != nil {
+			return nil, err
+		}
+		res = append(res, *rr)
+	}
+
+	return res, nil
+}
+
+func (r *storage) GetTopkekMessages(ctx context.Context, topkekID int64) ([]TopkekMessage, error) {
+	var res []topkekMessageDB
+
+	err := r.db.SelectContext(ctx, &res, `
+select 
+	topkek_id,
+	chat_id,
+	message_id,
+	type,
+	raw
+from topkek_message
+where topkek_id = $1
+order by id
+`,
+		topkekID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("unable to select topkek messages: %w", err)
+	}
+
+	return topkekMessagesFromDB(res)
+}
+
+func (r *storage) DeleteTopkekMessages(ctx context.Context, topkekID int64) error {
+	_, err := r.db.ExecContext(ctx, `
+delete from topkek_message
+where topkek_id = $1
+`,
+		topkekID,
+	)
+	if err != nil {
+		return fmt.Errorf("unable to select topkek messages: %w", err)
+	}
+
+	return nil
+}

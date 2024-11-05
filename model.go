@@ -66,6 +66,14 @@ type Storage interface {
 
 	SetLastUpdateID(ctx context.Context, lastUpdateID int) error
 	GetLastUpdateID(ctx context.Context) (int, error)
+
+	CreateTopkek(ctx context.Context, tk Topkek) (int64, error)
+	UpdateTopkekStatus(ctx context.Context, id int64, status TopkekStatus) error
+	GetLastTopkek(ctx context.Context, chatID int64) (*Topkek, error)
+	GetTopkek(ctx context.Context, topkekID int64) (*Topkek, error)
+	CreateTopkekMessage(ctx context.Context, msg TopkekMessage) error
+	GetTopkekMessages(ctx context.Context, topkekID int64) ([]TopkekMessage, error)
+	DeleteTopkekMessages(ctx context.Context, topkekID int64) error
 }
 
 type StorageManager interface {
@@ -78,4 +86,38 @@ type Assets interface {
 	GetAudioMessageDeleted() []byte
 	GetAudioNoRererence() []byte
 	GetAudioNoRepeat() []byte
+}
+
+type TopkekStatus string
+
+const (
+	TopkekStatusCreated TopkekStatus = "created"
+	TopkekStatusStarted TopkekStatus = "started"
+	TopkekStatusDone    TopkekStatus = "done"
+)
+
+type Topkek struct {
+	ID        int64        `db:"id"`
+	Name      string       `db:"name"`
+	ChatID    int64        `db:"chat_id"`
+	AuthorID  int64        `db:"author_id"`
+	Status    TopkekStatus `db:"status"`
+	CreatedAt time.Time    `db:"created_at"`
+}
+
+type TopkekMessageType string
+
+const (
+	TopkekMessageTypeSrc    TopkekMessageType = "src"
+	TopkekMessageTypePoll   TopkekMessageType = "poll"
+	TopkekMessageTypeDst    TopkekMessageType = "dst"
+	TopkekMessageTypeWinner TopkekMessageType = "win"
+)
+
+type TopkekMessage struct {
+	TopkekID  int64
+	ChatID    int64
+	MessageID int
+	Type      TopkekMessageType
+	Raw       tgbotapi.Message
 }

@@ -389,19 +389,26 @@ func (r *UpdateHandler) sendVoiceMessage(ctx context.Context,
 }
 
 func (r *UpdateHandler) handleMessage(ctx context.Context, storage Storage, message *tgbotapi.Message) error {
-	err := r.handleWhyCommand(ctx, storage, message)
+	err := r.handleCommand(ctx, storage, message)
 	if err != nil {
 		return fmt.Errorf("unable to handle command: %w", err)
 	}
 
-	imageHash, err := r.handleNewPhoto(ctx, storage, message)
-	if err != nil {
-		slog.ErrorContext(ctx, "unable to handle new photo", slog.String("err", err.Error()))
-	}
+	var imageHash, videoVideoHash, videoAudioHash *uint64
 
-	videoVideoHash, videoAudioHash, err := r.handleNewVideo(ctx, storage, message)
-	if err != nil {
-		slog.ErrorContext(ctx, "unable to handle new video", slog.String("err", err.Error()))
+	isCurrentTopkekMessage := r.isCurrentTopkekMessage(ctx, storage, message)
+	isCurrentTopkekMessageSrc := r.isCurrentTopkekMessageSrc(ctx, storage, message)
+
+	if !isCurrentTopkekMessage && !isCurrentTopkekMessageSrc {
+		imageHash, err = r.handleNewPhoto(ctx, storage, message)
+		if err != nil {
+			slog.ErrorContext(ctx, "unable to handle new photo", slog.String("err", err.Error()))
+		}
+
+		videoVideoHash, videoAudioHash, err = r.handleNewVideo(ctx, storage, message)
+		if err != nil {
+			slog.ErrorContext(ctx, "unable to handle new video", slog.String("err", err.Error()))
+		}
 	}
 
 	err = storage.UpsertMessage(ctx, Message{
@@ -418,14 +425,54 @@ func (r *UpdateHandler) handleMessage(ctx context.Context, storage Storage, mess
 		return fmt.Errorf("unable to save message image hash: %w", err)
 	}
 
+	if isCurrentTopkekMessageSrc {
+		err := r.handleCreateTopkekSrcMessage(ctx, storage, message)
+		if err != nil {
+			return fmt.Errorf("unable ot handle create topkek message: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (r *UpdateHandler) handleCommand(ctx context.Context, storage Storage, message *tgbotapi.Message) (err error) {
+	if !r.bot.IsMessageToMe(*message) {
+		return nil
+	}
+
+	switch message.Command() {
+	case "why":
+		err := r.handleWhyCommand(ctx, storage, message)
+		if err != nil {
+			return fmt.Errorf("unable to handle why command: %w", err)
+		}
+
+	case "topkek":
+		err := r.handleCreateTopkek(ctx, storage, message)
+		if err != nil {
+			return fmt.Errorf("unable to handle create topkek: %w", err)
+		}
+
+	case "start":
+		err := r.handleStartTopkek(ctx, storage, message)
+		if err != nil {
+			return fmt.Errorf("unable to handle start topkek: %w", err)
+		}
+
+	case "stop":
+		err := r.handleFinishTopkek(ctx, storage, message)
+		if err != nil {
+			return fmt.Errorf("unable to handle finish topkek: %w", err)
+		}
+
+	default:
+		slog.WarnContext(ctx, "unknown command", slog.String("command", message.Command()))
+	}
+
 	return nil
 }
 
 func (r *UpdateHandler) handleWhyCommand(ctx context.Context, storage Storage, message *tgbotapi.Message) (err error) {
-	if message.Text != "/why@memalnya_police_bot" {
-		return nil
-	}
-
 	if message.ReplyToMessage == nil {
 		err = r.sendVoiceMessageReply(ctx, message.Chat.ID, message.MessageID, "no_reply", r.assets.GetAudioNoRererence())
 		if err != nil {
