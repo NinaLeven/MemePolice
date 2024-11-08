@@ -24,6 +24,13 @@ func main() {
 	}))
 	slog.SetDefault(logger)
 
+	defer func() {
+		val := recover()
+		if val != nil {
+			slog.Error("panic", slog.Any("val", val))
+		}
+	}()
+
 	assetsDirPath := flag.String("a", "assets", "path to assets directory")
 	migrationsDirPath := flag.String("m", "migrations", "path to migrations directory")
 	dumpDirPath := flag.String("d", "", "path to dump directory")
