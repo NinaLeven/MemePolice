@@ -331,7 +331,7 @@ func (r *UpdateHandler) LiveChat(ctx context.Context, chatID int64) {
 
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
-		err := r.sendMessage(ctx, chatID, scanner.Text())
+		_, err := r.sendMessage(ctx, chatID, scanner.Text())
 		if err != nil {
 			slog.ErrorContext(ctx, "unable to send message", slog.String("err", err.Error()))
 		}
@@ -349,20 +349,20 @@ func (r *UpdateHandler) LiveChat(ctx context.Context, chatID int64) {
 func (r *UpdateHandler) sendMessage(ctx context.Context,
 	chatID int64,
 	text string,
-) error {
+) (*tgbotapi.Message, error) {
 	voice := tgbotapi.NewMessage(chatID, text)
 
-	_, err := r.bot.Send(voice)
+	res, err := r.bot.Send(voice)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
-			return &ErrNotFound{
+			return nil, &ErrNotFound{
 				Err: fmt.Errorf("unable to send text message: %w", err),
 			}
 		}
-		return fmt.Errorf("unable to send text message: %w", err)
+		return nil, fmt.Errorf("unable to send text message: %w", err)
 	}
 
-	return nil
+	return &res, nil
 }
 
 func (r *UpdateHandler) sendVoiceMessage(ctx context.Context,
@@ -463,6 +463,12 @@ func (r *UpdateHandler) handleCommand(ctx context.Context, storage Storage, mess
 		err := r.handleFinishTopkek(ctx, storage, message)
 		if err != nil {
 			return fmt.Errorf("unable to handle finish topkek: %w", err)
+		}
+
+	case "help":
+		err := r.handleHelp(ctx, storage, message)
+		if err != nil {
+			return fmt.Errorf("unable to handle help: %w", err)
 		}
 
 	default:

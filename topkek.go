@@ -573,3 +573,19 @@ func (r *UpdateHandler) restartTopkek(ctx context.Context, storage Storage, topk
 
 	return nil
 }
+
+const helpText = `Топкек инструкция:
+Создай топкек - /topkek
+Загрузи фото\видео
+Начни топкек /start
+Ждем сколько надо голосования
+Завершаем топкек /stop`
+
+func (r *UpdateHandler) handleHelp(ctx context.Context, storage Storage, message *tgbotapi.Message) error {
+	_, err := r.sendMessage(ctx, message.Chat.ID, helpText)
+	if err != nil {
+		return fmt.Errorf("unable to send text message: %w", err)
+	}
+
+	return nil
+}
