@@ -13,14 +13,14 @@ import (
 	tg "github.com/OvyFlash/telegram-bot-api"
 )
 
-const defaultMinimumReactions = 1
+const defaultMinimumReactions = 5
 
 func parseCreateTopkekOptions(message *tg.Message) createTopkekOptions {
 	opts := createTopkekOptions{
 		ChatID:    message.Chat.ID,
 		AuthorID:  message.From.ID,
 		MessageID: message.MessageID,
-		Name: fmt.Sprintf("Топкек %d.%d.%d",
+		Name: fmt.Sprintf("Топкек %02d.%02d.%04d",
 			time.Now().UTC().Day(),
 			time.Now().UTC().Month(),
 			time.Now().UTC().Year(),
@@ -607,10 +607,10 @@ func (r *UpdateHandler) restartTopkek(ctx context.Context, storage Storage, topk
 
 const helpText = `Топкек инструкция:
 * Создай топкек - /topkek
-* Загрузи фото\видео
-* Начни топкек /start
+* По умолчанию топкек создается начиная с предыдушего
+* Вместе с командой /topkek можно передать реплай на сообщение с которого должен начаться топкек
 * Ждем сколько надо голосования
-* Завершаем топкек /stop`
+* Завершаем топкек /stopkek`
 
 func (r *UpdateHandler) handleHelp(ctx context.Context, storage Storage, message *tg.Message) error {
 	_, err := r.sendMessage(ctx, message.Chat.ID, helpText)
