@@ -23,18 +23,18 @@ import (
 
 	"github.com/NinaLeven/MemePolice/fsutils"
 	"github.com/NinaLeven/MemePolice/videohash"
+	tg "github.com/OvyFlash/telegram-bot-api"
 	"github.com/corona10/goimagehash"
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 type UpdateHandler struct {
-	bot     *tgbotapi.BotAPI
+	bot     *tg.BotAPI
 	storage StorageManager
 	assets  Assets
 }
 
 func NewUpdateHandler(
-	bot *tgbotapi.BotAPI,
+	bot *tg.BotAPI,
 	storage StorageManager,
 	assets Assets,
 ) *UpdateHandler {
@@ -205,11 +205,11 @@ func (r *UpdateHandler) OneTimeMigration(ctx context.Context, dataDirectoryPath 
 		cerr := storage.UpsertMessage(ctx, Message{
 			MessageID: int(msg.ID),
 			ChatID:    chatID,
-			Raw: tgbotapi.Message{
-				Chat: &tgbotapi.Chat{
+			Raw: tg.Message{
+				Chat: tg.Chat{
 					ID: chatID,
 				},
-				From: &tgbotapi.User{
+				From: &tg.User{
 					ID: userId,
 				},
 				Text: (string(msg.Text))[0:min(len(msg.Text), 4096)],
@@ -261,8 +261,12 @@ func (r *UpdateHandler) HandleUpdates(ctx context.Context) error {
 		return fmt.Errorf("unable to get last update id: %w", err)
 	}
 
-	u := tgbotapi.NewUpdate(lastUpdateID)
+	u := tg.NewUpdate(lastUpdateID)
 	u.Timeout = 60
+	u.AllowedUpdates = []string{
+		"message",
+		"message_reaction",
+	}
 
 	updates := r.bot.GetUpdatesChan(u)
 
@@ -286,7 +290,7 @@ func (r *UpdateHandler) HandleUpdates(ctx context.Context) error {
 	}
 }
 
-func (r *UpdateHandler) handleUpdate(ctx context.Context, update tgbotapi.Update) error {
+func (r *UpdateHandler) handleUpdate(ctx context.Context, update tg.Update) error {
 	err := r.storage.ExecWithTx(ctx, func(ctx context.Context, storage Storage) error {
 		switch {
 		case update.Message != nil:
@@ -295,12 +299,11 @@ func (r *UpdateHandler) handleUpdate(ctx context.Context, update tgbotapi.Update
 				return fmt.Errorf("unable to handle message: %w", err)
 			}
 
-		case update.EditedMessage != nil:
-			// err := r.handleMessage(ctx, storage, update.EditedMessage)
-			// if err != nil {
-			// 	return fmt.Errorf("unable to handle edited message: %w", err)
-			// }
-			slog.InfoContext(ctx, "edited message", slog.Any("edited_msg", update.EditedMessage))
+		case update.MessageReaction != nil:
+			err := r.handleMessageReaction(ctx, storage, update.MessageReaction)
+			if err != nil {
+				return fmt.Errorf("unable to handle message reaction: %w", err)
+			}
 
 		default:
 			slog.WarnContext(ctx, "unknown update", slog.Any("update", update))
@@ -349,8 +352,8 @@ func (r *UpdateHandler) LiveChat(ctx context.Context, chatID int64) {
 func (r *UpdateHandler) sendMessage(ctx context.Context,
 	chatID int64,
 	text string,
-) (*tgbotapi.Message, error) {
-	voice := tgbotapi.NewMessage(chatID, text)
+) (*tg.Message, error) {
+	voice := tg.NewMessage(chatID, text)
 
 	res, err := r.bot.Send(voice)
 	if err != nil {
@@ -370,7 +373,7 @@ func (r *UpdateHandler) sendVoiceMessage(ctx context.Context,
 	name string,
 	data []byte,
 ) error {
-	voice := tgbotapi.NewVoice(chatID, tgbotapi.FileBytes{
+	voice := tg.NewVoice(chatID, tg.FileBytes{
 		Name:  name,
 		Bytes: data,
 	})
@@ -388,7 +391,22 @@ func (r *UpdateHandler) sendVoiceMessage(ctx context.Context,
 	return nil
 }
 
-func (r *UpdateHandler) handleMessage(ctx context.Context, storage Storage, message *tgbotapi.Message) error {
+func (r *UpdateHandler) handleMessageReaction(ctx context.Context, storage Storage, messageReaction *tg.MessageReactionUpdated) error {
+	err := storage.UpsertMessageReactions(ctx, MessageReactions{
+		MessageID: messageReaction.MessageID,
+		ChatID:    messageReaction.Chat.ID,
+		UserID:    messageReaction.User.ID,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	})
+	if err != nil {
+		return fmt.Errorf("unable to save message reactions: %w", err)
+	}
+
+	return nil
+}
+
+func (r *UpdateHandler) handleMessage(ctx context.Context, storage Storage, message *tg.Message) error {
 	err := r.handleCommand(ctx, storage, message)
 	if err != nil {
 		return fmt.Errorf("unable to handle command: %w", err)
@@ -396,10 +414,7 @@ func (r *UpdateHandler) handleMessage(ctx context.Context, storage Storage, mess
 
 	var imageHash, videoVideoHash, videoAudioHash *uint64
 
-	isCurrentTopkekMessage := r.isCurrentTopkekMessage(ctx, storage, message)
-	isCurrentTopkekMessageSrc := r.isCurrentTopkekMessageSrc(ctx, storage, message)
-
-	if !isCurrentTopkekMessage && !isCurrentTopkekMessageSrc {
+	if message.From.ID != r.bot.Self.ID {
 		imageHash, err = r.handleNewPhoto(ctx, storage, message)
 		if err != nil {
 			slog.ErrorContext(ctx, "unable to handle new photo", slog.String("err", err.Error()))
@@ -425,17 +440,10 @@ func (r *UpdateHandler) handleMessage(ctx context.Context, storage Storage, mess
 		return fmt.Errorf("unable to save message image hash: %w", err)
 	}
 
-	if isCurrentTopkekMessageSrc {
-		err := r.handleCreateTopkekSrcMessage(ctx, storage, message)
-		if err != nil {
-			return fmt.Errorf("unable ot handle create topkek message: %w", err)
-		}
-	}
-
 	return nil
 }
 
-func (r *UpdateHandler) handleCommand(ctx context.Context, storage Storage, message *tgbotapi.Message) (err error) {
+func (r *UpdateHandler) handleCommand(ctx context.Context, storage Storage, message *tg.Message) (err error) {
 	if !r.bot.IsMessageToMe(*message) {
 		return nil
 	}
@@ -447,19 +455,19 @@ func (r *UpdateHandler) handleCommand(ctx context.Context, storage Storage, mess
 			return fmt.Errorf("unable to handle why command: %w", err)
 		}
 
+	case "amend":
+		err := r.handleAmend(ctx, storage, message)
+		if err != nil {
+			return fmt.Errorf("unable to handle amend: %w", err)
+		}
+
 	case "topkek":
 		err := r.handleCreateTopkek(ctx, storage, message)
 		if err != nil {
 			return fmt.Errorf("unable to handle create topkek: %w", err)
 		}
 
-	case "start":
-		err := r.handleStartTopkek(ctx, storage, message)
-		if err != nil {
-			return fmt.Errorf("unable to handle start topkek: %w", err)
-		}
-
-	case "stop":
+	case "stopkek":
 		err := r.handleFinishTopkek(ctx, storage, message)
 		if err != nil {
 			return fmt.Errorf("unable to handle finish topkek: %w", err)
@@ -478,7 +486,36 @@ func (r *UpdateHandler) handleCommand(ctx context.Context, storage Storage, mess
 	return nil
 }
 
-func (r *UpdateHandler) handleWhyCommand(ctx context.Context, storage Storage, message *tgbotapi.Message) (err error) {
+func (r *UpdateHandler) handleAmend(ctx context.Context, storage Storage, message *tg.Message) (err error) {
+	if message.ReplyToMessage == nil {
+		err = r.sendVoiceMessageReply(ctx, message.Chat.ID, message.MessageID, "no_reply", r.assets.GetAudioNoRererence())
+		if err != nil {
+			return fmt.Errorf("unable to send no_reply voice message %w", err)
+		}
+		return nil
+	}
+
+	_, err = storage.GetMessage(ctx, message.Chat.ID, message.ReplyToMessage.MessageID)
+	if err != nil && !errors.Is(err, &ErrNotFound{}) {
+		return fmt.Errorf("unable to get message hash by id: %w", err)
+	}
+	if err != nil && errors.Is(err, &ErrNotFound{}) {
+		err = r.sendVoiceMessageReply(ctx, message.Chat.ID, message.MessageID, "no_repeat", r.assets.GetAudioNoRepeat())
+		if err != nil {
+			return fmt.Errorf("unable to send no_repeat voice message %w", err)
+		}
+		return nil
+	}
+
+	err = r.unsendReaction(ctx, storage, message.Chat.ID, message.MessageID)
+	if err != nil {
+		return fmt.Errorf("unable to unsend message reaction: %w", err)
+	}
+
+	return nil
+}
+
+func (r *UpdateHandler) handleWhyCommand(ctx context.Context, storage Storage, message *tg.Message) (err error) {
 	if message.ReplyToMessage == nil {
 		err = r.sendVoiceMessageReply(ctx, message.Chat.ID, message.MessageID, "no_reply", r.assets.GetAudioNoRererence())
 		if err != nil {
@@ -559,11 +596,13 @@ func (r *UpdateHandler) sendVoiceMessageReply(ctx context.Context,
 	name string,
 	data []byte,
 ) error {
-	voice := tgbotapi.NewVoice(chatID, tgbotapi.FileBytes{
+	voice := tg.NewVoice(chatID, tg.FileBytes{
 		Name:  name,
 		Bytes: data,
 	})
-	voice.ReplyToMessageID = replyToMessageID
+	voice.ReplyParameters = tg.ReplyParameters{
+		MessageID: replyToMessageID,
+	}
 
 	_, err := r.bot.Send(voice)
 	if err != nil {
@@ -583,8 +622,10 @@ func (r *UpdateHandler) sendMessageReply(ctx context.Context,
 	replyToMessageID int,
 	text string,
 ) (int, error) {
-	voice := tgbotapi.NewMessage(chatID, text)
-	voice.ReplyToMessageID = replyToMessageID
+	voice := tg.NewMessage(chatID, text)
+	voice.ReplyParameters = tg.ReplyParameters{
+		MessageID: replyToMessageID,
+	}
 
 	msg, err := r.bot.Send(voice)
 	if err != nil {
@@ -599,14 +640,69 @@ func (r *UpdateHandler) sendMessageReply(ctx context.Context,
 	return msg.MessageID, nil
 }
 
+func (r *UpdateHandler) sendReaction(ctx context.Context, storage Storage, chatID int64, messageID int, emoji string) error {
+	reactions := []tg.ReactionType{
+		{
+			Type:  "emoji",
+			Emoji: emoji,
+		},
+	}
+
+	err := storage.UpsertMessageReactions(ctx, MessageReactions{
+		ChatID:    chatID,
+		MessageID: messageID,
+		UserID:    r.bot.Self.ID,
+		Reactions: reactions,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		return fmt.Errorf("unable to save stale meme reaction: %w", err)
+	}
+
+	reaction := tg.NewSetMessageReaction(chatID, messageID, reactions, false)
+
+	_, err = r.bot.Send(reaction)
+	if err != nil {
+		return fmt.Errorf("unable to make send reaction: %w", err)
+	}
+
+	return nil
+}
+
+func (r *UpdateHandler) unsendReaction(ctx context.Context, storage Storage, chatID int64, messageID int) error {
+	reactions := []tg.ReactionType{}
+
+	err := storage.UpsertMessageReactions(ctx, MessageReactions{
+		ChatID:    chatID,
+		MessageID: messageID,
+		UserID:    r.bot.Self.ID,
+		Reactions: reactions,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		return fmt.Errorf("unable to unsave stale meme reaction: %w", err)
+	}
+
+	reaction := tg.NewSetMessageReaction(chatID, messageID, reactions, false)
+
+	_, err = r.bot.Send(reaction)
+	if err != nil {
+		return fmt.Errorf("unable to make unsend reaction: %w", err)
+	}
+
+	return nil
+}
+
 const deleteAutoReplyTimeout = time.Hour
 
-func (r *UpdateHandler) handleNewVideo(ctx context.Context, storage Storage, message *tgbotapi.Message) (*uint64, *uint64, error) {
+func (r *UpdateHandler) handleNewVideo(ctx context.Context, storage Storage, message *tg.Message) (*uint64, *uint64, error) {
 	if message.Video == nil {
 		return nil, nil, nil
 	}
 	if message.Video.FileSize > 1024*1024*120 {
-		slog.WarnContext(ctx, "video too big", slog.Int("size", message.Video.FileSize))
+		slog.WarnContext(ctx, "video too big", slog.Int64("size", message.Video.FileSize))
 		return nil, nil, nil
 	}
 
@@ -644,7 +740,7 @@ func (r *UpdateHandler) handleNewVideo(ctx context.Context, storage Storage, mes
 		return &videoHash, &audioHash, nil
 	}
 
-	err = r.sendStaleMemeReaction(ctx, message.Chat.ID, message.MessageID)
+	err = r.sendReaction(ctx, storage, message.Chat.ID, message.MessageID, RepeatedMemeEmoji)
 	if err != nil {
 		return &videoHash, &audioHash, fmt.Errorf("unable to send stale meme reaction: %w", err)
 	}
@@ -668,7 +764,7 @@ func (r *UpdateHandler) handleNewVideo(ctx context.Context, storage Storage, mes
 	return &videoHash, &audioHash, nil
 }
 
-func (r *UpdateHandler) handleNewPhoto(ctx context.Context, storage Storage, message *tgbotapi.Message) (*uint64, error) {
+func (r *UpdateHandler) handleNewPhoto(ctx context.Context, storage Storage, message *tg.Message) (*uint64, error) {
 	if len(message.Photo) == 0 {
 		return nil, nil
 	}
@@ -694,7 +790,7 @@ func (r *UpdateHandler) handleNewPhoto(ctx context.Context, storage Storage, mes
 		return ptr(imgHash.GetHash()), nil
 	}
 
-	err = r.sendStaleMemeReaction(ctx, message.Chat.ID, message.MessageID)
+	err = r.sendReaction(ctx, storage, message.Chat.ID, message.MessageID, RepeatedMemeEmoji)
 	if err != nil {
 		return ptr(imgHash.GetHash()), fmt.Errorf("unable to send stale meme reaction: %w", err)
 	}
@@ -716,36 +812,6 @@ func (r *UpdateHandler) handleNewPhoto(ctx context.Context, storage Storage, mes
 	}()
 
 	return ptr(imgHash.GetHash()), nil
-}
-
-const staleMemeEmoji = "✍️"
-
-func (r *UpdateHandler) sendStaleMemeReaction(_ context.Context, chatID int64, messageID int) error {
-	params := tgbotapi.Params{
-		"chat_id":    strconv.FormatInt(chatID, 10),
-		"message_id": strconv.Itoa(messageID),
-	}
-
-	err := params.AddInterface("reaction", []any{
-		map[string]any{
-			"type":  "emoji",
-			"emoji": staleMemeEmoji,
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("unable to add reaction param: %w", err)
-	}
-
-	resp, err := r.bot.MakeRequest("setMessageReaction", params)
-	if err != nil {
-		return fmt.Errorf("unable to make setMessageReaction request: %w", err)
-	}
-
-	if !resp.Ok {
-		return fmt.Errorf("error making setMessageReaction reqeust: error_code: %d", resp.ErrorCode)
-	}
-
-	return nil
 }
 
 func (r *UpdateHandler) getTelegramImage(ctx context.Context, fileID string) (image.Image, error) {
@@ -784,7 +850,7 @@ func (r *UpdateHandler) getTelegramVideo(ctx context.Context, fileID, filePath s
 }
 
 func (r *UpdateHandler) getTelegramFile(_ context.Context, fileID string) (io.ReadCloser, error) {
-	file, err := r.bot.GetFile(tgbotapi.FileConfig{
+	file, err := r.bot.GetFile(tg.FileConfig{
 		FileID: fileID,
 	})
 	if err != nil {
@@ -800,7 +866,7 @@ func (r *UpdateHandler) getTelegramFile(_ context.Context, fileID string) (io.Re
 }
 
 func (r *UpdateHandler) deleteMessage(_ context.Context, chatID int64, messageID int) error {
-	params := tgbotapi.Params{
+	params := tg.Params{
 		"chat_id":    strconv.FormatInt(chatID, 10),
 		"message_id": strconv.Itoa(messageID),
 	}

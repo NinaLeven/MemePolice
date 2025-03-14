@@ -5,7 +5,6 @@ go 1.23.2
 require (
 	github.com/corona10/goimagehash v1.1.0
 	github.com/go-fingerprint/fingerprint v0.0.0-20140803133125-29397256b7ff
-	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 	github.com/google/uuid v1.6.0
 	github.com/jmoiron/sqlx v1.4.0
 	github.com/jo-hoe/chromaprint v0.0.0-20240816145029-ca31e331519d
@@ -15,6 +14,7 @@ require (
 )
 
 require (
+	github.com/OvyFlash/telegram-bot-api v0.0.0-20241219171906-3f2ca0c14ada // indirect
 	github.com/mfridman/interpolate v0.0.2 // indirect
 	github.com/nfnt/resize v0.0.0-20180221191011-83c6a9932646 // indirect
 	github.com/sethvargo/go-retry v0.3.0 // indirect

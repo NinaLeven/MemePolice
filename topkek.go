@@ -3,134 +3,84 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"strconv"
 	"strings"
 	"time"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tg "github.com/OvyFlash/telegram-bot-api"
 )
 
-func (r *UpdateHandler) isCurrentTopkekMessageSrc(ctx context.Context, storage Storage, message *tgbotapi.Message) bool {
-	topkek, err := storage.GetLastTopkek(ctx, message.Chat.ID)
-	if err != nil {
-		slog.ErrorContext(ctx, "unable to get latest topkek", slog.String("err", err.Error()))
-		return false
+const defaultMinimumReactions = 5
+
+func parseCreateTopkekOptions(message *tg.Message) createTopkekOptions {
+	opts := createTopkekOptions{
+		ChatID:   message.Chat.ID,
+		AuthorID: message.From.ID,
+		Name: fmt.Sprintf("Топкек %d.%d",
+			time.Now().UTC().Day(),
+			time.Now().UTC().Month(),
+		),
+		MinReactions: defaultMinimumReactions,
 	}
 
-	return topkek.AuthorID == message.From.ID
-}
-
-func (r *UpdateHandler) isCurrentTopkekMessage(ctx context.Context, storage Storage, message *tgbotapi.Message) bool {
-	topkek, err := storage.GetLastTopkek(ctx, message.Chat.ID)
-	if err != nil {
-		slog.ErrorContext(ctx, "unable to get latest topkek", slog.String("err", err.Error()))
-		return false
+	if message.ReplyToMessage != nil {
+		opts.StartingMessageID = &message.ReplyToMessage.MessageID
 	}
 
-	msgs, err := storage.GetTopkekMessages(ctx, topkek.ID)
+	args := strings.Split(message.CommandArguments(), " ")
+
+	fs := flag.NewFlagSet("parser", flag.ContinueOnError)
+	mFlag := fs.String("m", "", "An integer value")
+
+	err := fs.Parse(args)
 	if err != nil {
-		slog.ErrorContext(ctx, "unable to get topkek mesages", slog.String("err", err.Error()))
-		return false
+		return opts
 	}
 
-	for _, msg := range msgs {
-		if msg.MessageID == message.MessageID && msg.ChatID == message.Chat.ID {
-			return true
+	if *mFlag != "" {
+		mValue, err := strconv.Atoi(*mFlag)
+		if err != nil {
+			slog.Warn("invalid -m flag", "-m", *mFlag)
 		}
+		opts.MinReactions = mValue
 	}
 
-	return false
+	positionalArgs := fs.Args()
+	if len(positionalArgs) > 0 {
+		opts.Name = strings.Join(positionalArgs, " ")
+	}
+
+	return opts
 }
 
-func (r *UpdateHandler) handleCreateTopkekSrcMessage(ctx context.Context, storage Storage, message *tgbotapi.Message) error {
-	if len(message.Photo) == 0 && message.Video == nil {
-		return nil
+func (r *UpdateHandler) handleCreateTopkek(ctx context.Context, storage Storage, message *tg.Message) error {
+	opts := parseCreateTopkekOptions(message)
+
+	topkekID, err := r.createTopkek(ctx, storage, opts)
+	if err != nil &&
+		!errors.Is(err, errNotEnoughTopkekSrcs) &&
+		!errors.Is(err, errTopkekAlreadyInProgress) {
+		return fmt.Errorf("unable to create topkek: %w", err)
 	}
-
-	topkek, err := storage.GetLastTopkek(ctx, message.Chat.ID)
-	if err != nil {
-		return fmt.Errorf("unable to get latest topkek: %w", err)
+	if err != nil && errors.Is(err, errNotEnoughTopkekSrcs) {
+		_, err := r.sendMessageReply(ctx, message.Chat.ID, message.MessageID, "надо хотя бы два мема")
+		if err != nil {
+			return fmt.Errorf("unable to send message reply: %w", err)
+		}
+		return errNotEnoughTopkekSrcs
 	}
-
-	if topkek.Status != TopkekStatusCreated {
-		return nil
-	}
-
-	err = storage.CreateTopkekMessage(ctx, TopkekMessage{
-		TopkekID:  topkek.ID,
-		ChatID:    topkek.ChatID,
-		MessageID: message.MessageID,
-		Type:      TopkekMessageTypeSrc,
-		Raw:       *message,
-	})
-	if err != nil {
-		return fmt.Errorf("unable to create topkek message src: %w", err)
-	}
-
-	return nil
-}
-
-func getNewTopkekName(message *tgbotapi.Message) string {
-	args := message.CommandArguments()
-	if len(args) > 0 {
-		return args
-	}
-
-	return fmt.Sprintf("Топкек %d.%d - %d.%d",
-		time.Now().UTC().Add(-time.Hour*24*7).Day(),
-		time.Now().UTC().Add(-time.Hour*24*7).Month(),
-		time.Now().UTC().Day(),
-		time.Now().UTC().Month(),
-	)
-}
-
-func (r *UpdateHandler) handleCreateTopkek(ctx context.Context, storage Storage, message *tgbotapi.Message) error {
-	lastTopkek, err := storage.GetLastTopkek(ctx, message.Chat.ID)
-	if err != nil && !errors.Is(err, &ErrNotFound{}) {
-		return fmt.Errorf("unable to get latest topkek: %w", err)
-	}
-
-	slog.InfoContext(ctx, "topkek", slog.Any("topkek", lastTopkek))
-
-	if lastTopkek != nil && lastTopkek.Status != TopkekStatusDone {
+	if err != nil && errors.Is(err, errTopkekAlreadyInProgress) {
 		_, err := r.sendMessageReply(ctx, message.Chat.ID, message.MessageID, "топкек уже идет")
 		if err != nil {
 			return fmt.Errorf("unable to send message reply: %w", err)
 		}
-		return nil
+		return errTopkekAlreadyInProgress
 	}
 
-	_, err = storage.CreateTopkek(ctx, Topkek{
-		Name:      getNewTopkekName(message),
-		AuthorID:  message.From.ID,
-		CreatedAt: time.Now().UTC(),
-		ChatID:    message.Chat.ID,
-		Status:    TopkekStatusCreated,
-	})
-	if err != nil {
-		return fmt.Errorf("unable to create topkek: %w", err)
-	}
-
-	return nil
-}
-
-func (r *UpdateHandler) handleStartTopkek(ctx context.Context, storage Storage, message *tgbotapi.Message) error {
-	topkek, err := storage.GetLastTopkek(ctx, message.Chat.ID)
-	if err != nil {
-		return fmt.Errorf("unable to get latest topkek: %w", err)
-	}
-
-	if topkek.Status != TopkekStatusCreated {
-		_, err := r.sendMessageReply(ctx, message.Chat.ID, message.MessageID, "создай топкек")
-		if err != nil {
-			return fmt.Errorf("unable to send message reply: %w", err)
-		}
-		return nil
-	}
-
-	err = r.startTopkek(ctx, storage, topkek.ID)
+	err = r.startTopkek(ctx, storage, topkekID)
 	if err != nil && !errors.Is(err, errNotEnoughTopkekSrcs) {
 		return fmt.Errorf("unable to start topkek: %w", err)
 	}
@@ -145,13 +95,84 @@ func (r *UpdateHandler) handleStartTopkek(ctx context.Context, storage Storage, 
 	return nil
 }
 
-func (r *UpdateHandler) getTopkekMessages(ctx context.Context, storage Storage, topkekID int64, msgType TopkekMessageType) ([]*tgbotapi.Message, error) {
+var errTopkekAlreadyInProgress = errors.New("not enough topkek already in progress")
+
+type createTopkekOptions struct {
+	MessageID         int
+	ChatID            int64
+	Name              string
+	AuthorID          int64
+	StartingMessageID *int
+	MinReactions      int
+}
+
+func (r *UpdateHandler) createTopkek(ctx context.Context, storage Storage, opts createTopkekOptions) (int64, error) {
+	lastTopkek, err := storage.GetLastTopkek(ctx, opts.ChatID)
+	if err != nil && !errors.Is(err, &ErrNotFound{}) {
+		return 0, fmt.Errorf("unable to get latest topkek: %w", err)
+	}
+
+	if lastTopkek != nil && lastTopkek.Status != TopkekStatusDone {
+		return 0, errTopkekAlreadyInProgress
+	}
+
+	listOpts := ListMessagesWithReactionCountOptions{
+		ChatID:            opts.ChatID,
+		MinReactions:      opts.MinReactions,
+		StartingMessageID: lastTopkek.MessageID,
+		ExcludeReactions: [2]string{
+			RepeatedMemeEmoji,
+			StaleMemeEmoji,
+		},
+	}
+	if opts.StartingMessageID != nil {
+		listOpts.StartingMessageID = *opts.StartingMessageID
+	}
+
+	sourceMessages, err := storage.ListMessagesWithReactionCount(ctx, listOpts)
+	if err != nil {
+		return 0, fmt.Errorf("unable to find topkek source messages: %w", err)
+	}
+
+	if len(sourceMessages) < 2 {
+		return 0, errNotEnoughTopkekSrcs
+	}
+
+	topkekID, err := storage.CreateTopkek(ctx, Topkek{
+		Name:      opts.Name,
+		AuthorID:  opts.AuthorID,
+		ChatID:    opts.ChatID,
+		MessageID: opts.MessageID,
+		Status:    TopkekStatusCreated,
+		CreatedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("unable to create topkek: %w", err)
+	}
+
+	for _, msg := range sourceMessages {
+		err := storage.CreateTopkekMessage(ctx, TopkekMessage{
+			TopkekID:  topkekID,
+			ChatID:    opts.ChatID,
+			MessageID: msg.MessageID,
+			Type:      TopkekMessageTypeSrc,
+			Raw:       msg.Raw,
+		})
+		if err != nil {
+			return 0, fmt.Errorf("unable to create topkek src message: %w", err)
+		}
+	}
+
+	return topkekID, nil
+}
+
+func (r *UpdateHandler) getTopkekMessages(ctx context.Context, storage Storage, topkekID int64, msgType TopkekMessageType) ([]*tg.Message, error) {
 	topkekMessages, err := storage.GetTopkekMessages(ctx, topkekID)
 	if err != nil {
 		return nil, fmt.Errorf("unable to start topkek: %w", err)
 	}
 
-	srcMessages := []*tgbotapi.Message{}
+	srcMessages := []*tg.Message{}
 
 	for _, topkekMessage := range topkekMessages {
 		if topkekMessage.Type != msgType {
@@ -180,10 +201,10 @@ func maxChunkSize(n int) int {
 	return c
 }
 
-func chunkMessages(srcs []*tgbotapi.Message) [][]*tgbotapi.Message {
+func chunkMessages(srcs []*tg.Message) [][]*tg.Message {
 	chunkSize := maxChunkSize(len(srcs))
 
-	res := [][]*tgbotapi.Message{}
+	res := [][]*tg.Message{}
 	for i := 0; i < len(srcs); i += chunkSize {
 		end := i + chunkSize
 		if end > len(srcs) {
@@ -237,7 +258,7 @@ func (r *UpdateHandler) startTopkek(ctx context.Context, storage Storage, topkek
 	return nil
 }
 
-func (r *UpdateHandler) sendTopkekChunk(ctx context.Context, storage Storage, topkek *Topkek, chunk []*tgbotapi.Message, i int) error {
+func (r *UpdateHandler) sendTopkekChunk(ctx context.Context, storage Storage, topkek *Topkek, chunk []*tg.Message, i int) error {
 	pollAnswers := []string{}
 	files := []any{}
 
@@ -245,10 +266,10 @@ func (r *UpdateHandler) sendTopkekChunk(ctx context.Context, storage Storage, to
 		switch {
 		case len(msg.Photo) > 0:
 			photo := msg.Photo[len(msg.Photo)-1]
-			files = append(files, tgbotapi.NewInputMediaPhoto(tgbotapi.FileID(photo.FileID)))
+			files = append(files, tg.NewInputMediaPhoto(tg.FileID(photo.FileID)))
 
 		case msg.Video != nil:
-			files = append(files, tgbotapi.NewInputMediaVideo(tgbotapi.FileID(msg.Video.FileID)))
+			files = append(files, tg.NewInputMediaVideo(tg.FileID(msg.Video.FileID)))
 
 		default:
 			continue
@@ -298,8 +319,8 @@ func (r *UpdateHandler) sendTopkekChunk(ctx context.Context, storage Storage, to
 func (r *UpdateHandler) sendMediaGroup(ctx context.Context,
 	chatID int64,
 	files []any,
-) ([]tgbotapi.Message, error) {
-	msgs, err := r.bot.SendMediaGroup(tgbotapi.NewMediaGroup(chatID, files))
+) ([]tg.Message, error) {
+	msgs, err := r.bot.SendMediaGroup(tg.NewMediaGroup(chatID, files))
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			return nil, &ErrNotFound{
@@ -316,8 +337,13 @@ func (r *UpdateHandler) sendSimplePoll(ctx context.Context,
 	chatID int64,
 	question string,
 	answers []string,
-) (*tgbotapi.Message, error) {
-	poll := tgbotapi.NewPoll(chatID, question, answers...)
+) (*tg.Message, error) {
+	opts := make([]tg.InputPollOption, 0, len(answers))
+	for _, a := range answers {
+		opts = append(opts, tg.NewPollOption(a))
+	}
+
+	poll := tg.NewPoll(chatID, question, opts...)
 	poll.AllowsMultipleAnswers = true
 	poll.IsAnonymous = false
 
@@ -334,7 +360,7 @@ func (r *UpdateHandler) sendSimplePoll(ctx context.Context,
 	return &msg, nil
 }
 
-func (r *UpdateHandler) handleFinishTopkek(ctx context.Context, storage Storage, message *tgbotapi.Message) error {
+func (r *UpdateHandler) handleFinishTopkek(ctx context.Context, storage Storage, message *tg.Message) error {
 	topkek, err := storage.GetLastTopkek(ctx, message.Chat.ID)
 	if err != nil {
 		return fmt.Errorf("unable to get latest topkek: %w", err)
@@ -371,7 +397,7 @@ func (r *UpdateHandler) handleFinishTopkek(ctx context.Context, storage Storage,
 	return nil
 }
 
-func getPollWinners(opts []tgbotapi.PollOption) []int {
+func getPollWinners(opts []tg.PollOption) []int {
 	m := 0
 	for _, opt := range opts {
 		if opt.VoterCount > m {
@@ -399,10 +425,12 @@ func (r *UpdateHandler) sendPhotoRepy(ctx context.Context,
 	replyMessageID int,
 	text string,
 	fileID string,
-) (*tgbotapi.Message, error) {
-	photo := tgbotapi.NewPhoto(chatID, tgbotapi.FileID(fileID))
+) (*tg.Message, error) {
+	photo := tg.NewPhoto(chatID, tg.FileID(fileID))
 	photo.Caption = text
-	photo.ReplyToMessageID = replyMessageID
+	photo.ReplyParameters = tg.ReplyParameters{
+		MessageID: replyMessageID,
+	}
 
 	msg, err := r.bot.Send(photo)
 	if err != nil {
@@ -422,10 +450,12 @@ func (r *UpdateHandler) sendVideoRepy(ctx context.Context,
 	replyMessageID int,
 	text string,
 	fileID string,
-) (*tgbotapi.Message, error) {
-	photo := tgbotapi.NewVideo(chatID, tgbotapi.FileID(fileID))
+) (*tg.Message, error) {
+	photo := tg.NewVideo(chatID, tg.FileID(fileID))
 	photo.Caption = text
-	photo.ReplyToMessageID = replyMessageID
+	photo.ReplyParameters = tg.ReplyParameters{
+		MessageID: replyMessageID,
+	}
 
 	msg, err := r.bot.Send(photo)
 	if err != nil {
@@ -465,10 +495,10 @@ func (r *UpdateHandler) finishTopkek(ctx context.Context, storage Storage, topke
 		return fmt.Errorf("unable to get topkek descs: %w", err)
 	}
 
-	pollResutls := []tgbotapi.PollOption{}
+	pollResutls := []tg.PollOption{}
 
 	for _, pollMsg := range pollIds {
-		poll, err := r.bot.StopPoll(tgbotapi.NewStopPoll(topkek.ChatID, pollMsg.MessageID))
+		poll, err := r.bot.StopPoll(tg.NewStopPoll(topkek.ChatID, pollMsg.MessageID))
 		if err != nil {
 			return fmt.Errorf("unable to stop poll: %w", err)
 		}
@@ -481,7 +511,7 @@ func (r *UpdateHandler) finishTopkek(ctx context.Context, storage Storage, topke
 	}
 
 	if len(winners) > 1 {
-		winnerMsgs := []*tgbotapi.Message{}
+		winnerMsgs := []*tg.Message{}
 		for _, winner := range winners {
 			winnerMsgs = append(winnerMsgs, destMsgs[winner])
 		}
@@ -497,7 +527,7 @@ func (r *UpdateHandler) finishTopkek(ctx context.Context, storage Storage, topke
 	winner := winners[0]
 
 	winnerMsg := destMsgs[winner]
-	var winnerMsgRes *tgbotapi.Message
+	var winnerMsgRes *tg.Message
 
 	switch {
 	case len(winnerMsg.Photo) > 0:
@@ -543,7 +573,7 @@ func (r *UpdateHandler) finishTopkek(ctx context.Context, storage Storage, topke
 	return nil
 }
 
-func (r *UpdateHandler) restartTopkek(ctx context.Context, storage Storage, topkek *Topkek, srcs []*tgbotapi.Message) error {
+func (r *UpdateHandler) restartTopkek(ctx context.Context, storage Storage, topkek *Topkek, srcs []*tg.Message) error {
 	err := storage.DeleteTopkekMessages(ctx, topkek.ID)
 	if err != nil {
 		return fmt.Errorf("unable to delete topkek old topkek msgs: %w", err)
@@ -581,7 +611,7 @@ const helpText = `Топкек инструкция:
 * Ждем сколько надо голосования
 * Завершаем топкек /stop`
 
-func (r *UpdateHandler) handleHelp(ctx context.Context, storage Storage, message *tgbotapi.Message) error {
+func (r *UpdateHandler) handleHelp(ctx context.Context, storage Storage, message *tg.Message) error {
 	_, err := r.sendMessage(ctx, message.Chat.ID, helpText)
 	if err != nil {
 		return fmt.Errorf("unable to send text message: %w", err)

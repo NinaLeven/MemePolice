@@ -10,7 +10,7 @@ import (
 	"log/slog"
 	"time"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tgbotapi "github.com/OvyFlash/telegram-bot-api"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
 	"github.com/pressly/goose/v3"
@@ -249,6 +249,20 @@ type messageDB struct {
 	UpdatedAt      time.Time `db:"updated_at"`
 }
 
+func messagesFromDB(r []messageDB) ([]Message, error) {
+	res := make([]Message, 0, len(r))
+
+	for _, m := range r {
+		mr, err := messageFromDB(m)
+		if err != nil {
+			return nil, err
+		}
+		res = append(res, *mr)
+	}
+
+	return res, nil
+}
+
 func messageFromDB(r messageDB) (*Message, error) {
 	var data tgbotapi.Message
 	err := json.Unmarshal([]byte(r.Raw), &data)
@@ -420,6 +434,7 @@ func (r *storage) CreateTopkek(ctx context.Context, tk Topkek) (int64, error) {
 insert into topkek(
 	name,
 	chat_id,
+	message_id,
 	author_id,
 	created_at,
 	status
@@ -428,12 +443,14 @@ insert into topkek(
 	$2,
 	$3,
 	$4,
-	$5
+	$5,
+	$6
 )
 returning id
 	`,
 		tk.Name,
 		tk.ChatID,
+		tk.MessageID,
 		tk.AuthorID,
 		tk.CreatedAt,
 		tk.Status,
@@ -469,6 +486,7 @@ select
 	id,
 	name,
 	chat_id,
+	message_id,
 	author_id,
 	created_at,
 	status
@@ -498,6 +516,7 @@ select
 	id,
 	name,
 	chat_id,
+	message_id,
 	author_id,
 	created_at,
 	status
@@ -627,4 +646,97 @@ where topkek_id = $1
 	}
 
 	return nil
+}
+
+func (r *storage) UpsertMessageReactions(ctx context.Context, msg MessageReactions) error {
+	reactions, err := json.Marshal(msg.Reactions)
+	if err != nil {
+		return fmt.Errorf("unable to marshal reactions: %w", err)
+	}
+
+	_, err = r.db.ExecContext(ctx, `
+insert into message_reactions(
+	chat_id,
+	message_id,
+	user_id,
+	reactions,
+	created_at,
+	updated_at
+) values (
+	$1,
+	$2,
+	$3,
+	$4,
+	$5,
+	$6
+)
+on conflict (chat_id, message_id, user_id)
+	do update 
+		set 
+			reactions = excluded.reactions,
+			updated_at = excluded.updated_at
+	`,
+		msg.ChatID,
+		msg.MessageID,
+		msg.UserID,
+		string(reactions),
+		msg.CreatedAt,
+		msg.UpdatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("unable to upsert message reactions: %w", err)
+	}
+
+	return nil
+}
+
+func (r *storage) ListMessagesWithReactionCount(ctx context.Context, opts ListMessagesWithReactionCountOptions) ([]Message, error) {
+	var res []messageDB
+
+	err := r.db.SelectContext(ctx, &res, `
+select 
+	m.chat_id,
+	m.message_id,
+	m.data,
+	m.image_hash,
+	m.video_video_hash,
+	m.video_audio_hash,
+	m.created_at,
+	m.updated_at
+from message as m
+inner join lateral (
+	SELECT sum(jsonb_array_length(reactions)) reacts, 
+      	sum(
+           SELECT sum((case 
+							when (elem->>'emoji') IN ($1, $2) 
+								then 1
+							else 0
+					end))
+           FROM jsonb_array_elements(reactions) AS elem
+		   group by true
+       	) AS is_stale
+	FROM message_reactions as mr
+	where mr.chat_id = m.chat_id
+		and mr.message_id = m.message_id
+	group by mr.chat_id, mr.message_id
+) as mr
+	on rm.is_stale = 0
+		and rm.reacts >= $3
+where m.chat_id = $4
+	and m.id >= $5
+	and (m.image_hash is not null
+		or m.video_video_hash is not null
+		or m.video_audio_hash is not null)
+`,
+		opts.ExcludeReactions[0],
+		opts.ExcludeReactions[1],
+		opts.MinReactions,
+		opts.ChatID,
+		opts.StartingMessageID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("unable to select message by image hash: %w", err)
+	}
+
+	return messagesFromDB(res)
 }

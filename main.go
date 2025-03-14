@@ -10,7 +10,7 @@ import (
 	"os/signal"
 	"time"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tg "github.com/OvyFlash/telegram-bot-api"
 )
 
 func main() {
@@ -41,7 +41,7 @@ func main() {
 
 	flag.Parse()
 
-	bot, err := tgbotapi.NewBotAPI(os.Getenv("BOT_TOKEN"))
+	bot, err := tg.NewBotAPI(os.Getenv("BOT_TOKEN"))
 	if err != nil {
 		log.Panic(fmt.Errorf("unable to create bot: %w", err))
 	}

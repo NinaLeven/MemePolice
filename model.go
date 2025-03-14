@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	tg "github.com/OvyFlash/telegram-bot-api"
 )
 
 func ptr[T any](t T) *T {
@@ -45,15 +45,36 @@ func (e *ErrNotFound) As(target interface{}) bool {
 	return errors.As(e.Err, target)
 }
 
+const (
+	StaleMemeEmoji    = "🥱"
+	RepeatedMemeEmoji = "✍️"
+)
+
 type Message struct {
 	MessageID      int
 	ChatID         int64
-	Raw            tgbotapi.Message
+	Raw            tg.Message
 	ImageHash      *uint64
 	VideoVideoHash *uint64
 	VideoAudioHash *uint64
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+}
+
+type MessageReactions struct {
+	MessageID int
+	ChatID    int64
+	UserID    int64
+	Reactions []tg.ReactionType
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+type ListMessagesWithReactionCountOptions struct {
+	ChatID            int64
+	StartingMessageID int
+	MinReactions      int
+	ExcludeReactions  [2]string
 }
 
 type Storage interface {
@@ -63,6 +84,9 @@ type Storage interface {
 	GetFirstMatchingMessageByVideoHash(ctx context.Context, chatID int64, videoHash, audioHash uint64) (*Message, error)
 	GetLastMatchingMessageByVideoHash(ctx context.Context, chatID int64, videoHash, audioHash uint64) (*Message, error)
 	GetMessage(ctx context.Context, chatID int64, messageID int) (*Message, error)
+
+	UpsertMessageReactions(ctx context.Context, msg MessageReactions) error
+	ListMessagesWithReactionCount(ctx context.Context, opts ListMessagesWithReactionCountOptions) ([]Message, error)
 
 	SetLastUpdateID(ctx context.Context, lastUpdateID int) error
 	GetLastUpdateID(ctx context.Context) (int, error)
@@ -100,6 +124,7 @@ type Topkek struct {
 	ID        int64        `db:"id"`
 	Name      string       `db:"name"`
 	ChatID    int64        `db:"chat_id"`
+	MessageID int          `db:"message_id"`
 	AuthorID  int64        `db:"author_id"`
 	Status    TopkekStatus `db:"status"`
 	CreatedAt time.Time    `db:"created_at"`
@@ -119,5 +144,5 @@ type TopkekMessage struct {
 	ChatID    int64
 	MessageID int
 	Type      TopkekMessageType
-	Raw       tgbotapi.Message
+	Raw       tg.Message
 }
