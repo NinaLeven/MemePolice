@@ -396,6 +396,7 @@ func (r *UpdateHandler) handleMessageReaction(ctx context.Context, storage Stora
 		MessageID: messageReaction.MessageID,
 		ChatID:    messageReaction.Chat.ID,
 		UserID:    messageReaction.User.ID,
+		Reactions: messageReaction.NewReaction,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 	})
@@ -507,7 +508,7 @@ func (r *UpdateHandler) handleAmend(ctx context.Context, storage Storage, messag
 		return nil
 	}
 
-	err = r.unsendReaction(ctx, storage, message.Chat.ID, message.MessageID)
+	err = r.unsendReaction(ctx, storage, message.Chat.ID, message.ReplyToMessage.MessageID)
 	if err != nil {
 		return fmt.Errorf("unable to unsend message reaction: %w", err)
 	}
@@ -661,9 +662,8 @@ func (r *UpdateHandler) sendReaction(ctx context.Context, storage Storage, chatI
 	}
 
 	reaction := tg.NewSetMessageReaction(chatID, messageID, reactions, false)
-
 	_, err = r.bot.Send(reaction)
-	if err != nil {
+	if err != nil && !strings.Contains(err.Error(), "cannot unmarshal bool into Go value of type tgbotapi.Message") {
 		return fmt.Errorf("unable to make send reaction: %w", err)
 	}
 
@@ -671,13 +671,18 @@ func (r *UpdateHandler) sendReaction(ctx context.Context, storage Storage, chatI
 }
 
 func (r *UpdateHandler) unsendReaction(ctx context.Context, storage Storage, chatID int64, messageID int) error {
-	reactions := []tg.ReactionType{}
+	reactions := []tg.ReactionType{
+		{
+			Type:  "emoji",
+			Emoji: OKEmoji,
+		},
+	}
 
 	err := storage.UpsertMessageReactions(ctx, MessageReactions{
 		ChatID:    chatID,
 		MessageID: messageID,
 		UserID:    r.bot.Self.ID,
-		Reactions: reactions,
+		Reactions: []tg.ReactionType{},
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 	})
@@ -688,7 +693,7 @@ func (r *UpdateHandler) unsendReaction(ctx context.Context, storage Storage, cha
 	reaction := tg.NewSetMessageReaction(chatID, messageID, reactions, false)
 
 	_, err = r.bot.Send(reaction)
-	if err != nil {
+	if err != nil && !strings.Contains(err.Error(), "cannot unmarshal bool into Go value of type tgbotapi.Message") {
 		return fmt.Errorf("unable to make unsend reaction: %w", err)
 	}
 

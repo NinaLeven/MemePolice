@@ -48,6 +48,7 @@ func (e *ErrNotFound) As(target interface{}) bool {
 const (
 	StaleMemeEmoji    = "🥱"
 	RepeatedMemeEmoji = "✍️"
+	OKEmoji           = "👌"
 )
 
 type Message struct {
@@ -115,7 +116,6 @@ type Assets interface {
 type TopkekStatus string
 
 const (
-	TopkekStatusCreated TopkekStatus = "created"
 	TopkekStatusStarted TopkekStatus = "started"
 	TopkekStatusDone    TopkekStatus = "done"
 )
@@ -140,9 +140,10 @@ const (
 )
 
 type TopkekMessage struct {
-	TopkekID  int64
-	ChatID    int64
-	MessageID int
-	Type      TopkekMessageType
-	Raw       tg.Message
+	TopkekID        int64
+	ChatID          int64
+	MessageID       int
+	SourceMessageID int
+	Type            TopkekMessageType
+	Raw             tg.Message
 }

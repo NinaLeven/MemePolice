@@ -13,15 +13,17 @@ import (
 	tg "github.com/OvyFlash/telegram-bot-api"
 )
 
-const defaultMinimumReactions = 5
+const defaultMinimumReactions = 1
 
 func parseCreateTopkekOptions(message *tg.Message) createTopkekOptions {
 	opts := createTopkekOptions{
-		ChatID:   message.Chat.ID,
-		AuthorID: message.From.ID,
-		Name: fmt.Sprintf("Топкек %d.%d",
+		ChatID:    message.Chat.ID,
+		AuthorID:  message.From.ID,
+		MessageID: message.MessageID,
+		Name: fmt.Sprintf("Топкек %d.%d.%d",
 			time.Now().UTC().Day(),
 			time.Now().UTC().Month(),
+			time.Now().UTC().Year(),
 		),
 		MinReactions: defaultMinimumReactions,
 	}
@@ -48,9 +50,9 @@ func parseCreateTopkekOptions(message *tg.Message) createTopkekOptions {
 		opts.MinReactions = mValue
 	}
 
-	positionalArgs := fs.Args()
-	if len(positionalArgs) > 0 {
-		opts.Name = strings.Join(positionalArgs, " ")
+	positionalArgs := strings.Join(fs.Args(), " ")
+	if positionalArgs != "" {
+		opts.Name = positionalArgs
 	}
 
 	return opts
@@ -59,9 +61,10 @@ func parseCreateTopkekOptions(message *tg.Message) createTopkekOptions {
 func (r *UpdateHandler) handleCreateTopkek(ctx context.Context, storage Storage, message *tg.Message) error {
 	opts := parseCreateTopkekOptions(message)
 
-	topkekID, err := r.createTopkek(ctx, storage, opts)
+	err := r.createTopkek(ctx, storage, opts)
 	if err != nil &&
 		!errors.Is(err, errNotEnoughTopkekSrcs) &&
+		!errors.Is(err, errNoTopkekStartMessage) &&
 		!errors.Is(err, errTopkekAlreadyInProgress) {
 		return fmt.Errorf("unable to create topkek: %w", err)
 	}
@@ -79,23 +82,21 @@ func (r *UpdateHandler) handleCreateTopkek(ctx context.Context, storage Storage,
 		}
 		return errTopkekAlreadyInProgress
 	}
-
-	err = r.startTopkek(ctx, storage, topkekID)
-	if err != nil && !errors.Is(err, errNotEnoughTopkekSrcs) {
-		return fmt.Errorf("unable to start topkek: %w", err)
-	}
-	if err != nil && errors.Is(err, errNotEnoughTopkekSrcs) {
-		_, err := r.sendMessageReply(ctx, message.Chat.ID, message.MessageID, "надо хотя бы два мема")
+	if err != nil && errors.Is(err, errNoTopkekStartMessage) {
+		_, err := r.sendMessageReply(ctx, message.Chat.ID, message.MessageID, "надо реплай с какого сообщения начать топкек")
 		if err != nil {
 			return fmt.Errorf("unable to send message reply: %w", err)
 		}
-		return errNotEnoughTopkekSrcs
+		return errTopkekAlreadyInProgress
 	}
 
 	return nil
 }
 
-var errTopkekAlreadyInProgress = errors.New("not enough topkek already in progress")
+var (
+	errTopkekAlreadyInProgress = errors.New("not enough topkek already in progress")
+	errNoTopkekStartMessage    = errors.New("no topkek starting message")
+)
 
 type createTopkekOptions struct {
 	MessageID         int
@@ -106,24 +107,29 @@ type createTopkekOptions struct {
 	MinReactions      int
 }
 
-func (r *UpdateHandler) createTopkek(ctx context.Context, storage Storage, opts createTopkekOptions) (int64, error) {
+func (r *UpdateHandler) createTopkek(ctx context.Context, storage Storage, opts createTopkekOptions) error {
 	lastTopkek, err := storage.GetLastTopkek(ctx, opts.ChatID)
 	if err != nil && !errors.Is(err, &ErrNotFound{}) {
-		return 0, fmt.Errorf("unable to get latest topkek: %w", err)
+		return fmt.Errorf("unable to get latest topkek: %w", err)
 	}
 
 	if lastTopkek != nil && lastTopkek.Status != TopkekStatusDone {
-		return 0, errTopkekAlreadyInProgress
+		return errTopkekAlreadyInProgress
+	}
+	if lastTopkek == nil && opts.StartingMessageID == nil {
+		return errNoTopkekStartMessage
 	}
 
 	listOpts := ListMessagesWithReactionCountOptions{
-		ChatID:            opts.ChatID,
-		MinReactions:      opts.MinReactions,
-		StartingMessageID: lastTopkek.MessageID,
+		ChatID:       opts.ChatID,
+		MinReactions: opts.MinReactions,
 		ExcludeReactions: [2]string{
 			RepeatedMemeEmoji,
 			StaleMemeEmoji,
 		},
+	}
+	if lastTopkek != nil {
+		listOpts.StartingMessageID = lastTopkek.MessageID
 	}
 	if opts.StartingMessageID != nil {
 		listOpts.StartingMessageID = *opts.StartingMessageID
@@ -131,11 +137,11 @@ func (r *UpdateHandler) createTopkek(ctx context.Context, storage Storage, opts 
 
 	sourceMessages, err := storage.ListMessagesWithReactionCount(ctx, listOpts)
 	if err != nil {
-		return 0, fmt.Errorf("unable to find topkek source messages: %w", err)
+		return fmt.Errorf("unable to find topkek source messages: %w", err)
 	}
 
 	if len(sourceMessages) < 2 {
-		return 0, errNotEnoughTopkekSrcs
+		return errNotEnoughTopkekSrcs
 	}
 
 	topkekID, err := storage.CreateTopkek(ctx, Topkek{
@@ -143,46 +149,59 @@ func (r *UpdateHandler) createTopkek(ctx context.Context, storage Storage, opts 
 		AuthorID:  opts.AuthorID,
 		ChatID:    opts.ChatID,
 		MessageID: opts.MessageID,
-		Status:    TopkekStatusCreated,
+		Status:    TopkekStatusStarted,
 		CreatedAt: time.Now().UTC(),
 	})
 	if err != nil {
-		return 0, fmt.Errorf("unable to create topkek: %w", err)
+		return fmt.Errorf("unable to create topkek: %w", err)
 	}
 
-	for _, msg := range sourceMessages {
-		err := storage.CreateTopkekMessage(ctx, TopkekMessage{
-			TopkekID:  topkekID,
-			ChatID:    opts.ChatID,
-			MessageID: msg.MessageID,
-			Type:      TopkekMessageTypeSrc,
-			Raw:       msg.Raw,
-		})
-		if err != nil {
-			return 0, fmt.Errorf("unable to create topkek src message: %w", err)
-		}
+	topkek, err := storage.GetTopkek(ctx, topkekID)
+	if err != nil {
+		return fmt.Errorf("unable to get current topkek: %w", err)
 	}
 
-	return topkekID, nil
+	err = r.startTopkek(ctx, storage, topkek, messagesToTG(sourceMessages))
+	if err != nil {
+		return fmt.Errorf("unable to start topkek: %w", err)
+	}
+
+	return nil
 }
 
-func (r *UpdateHandler) getTopkekMessages(ctx context.Context, storage Storage, topkekID int64, msgType TopkekMessageType) ([]*tg.Message, error) {
+func messagesToTG(r []Message) []*tg.Message {
+	res := make([]*tg.Message, 0, len(r))
+	for _, msg := range r {
+		res = append(res, &msg.Raw)
+	}
+	return res
+}
+
+func (r *UpdateHandler) getTopkekMessages(ctx context.Context, storage Storage, topkekID int64, msgType TopkekMessageType) ([]TopkekMessage, error) {
 	topkekMessages, err := storage.GetTopkekMessages(ctx, topkekID)
 	if err != nil {
-		return nil, fmt.Errorf("unable to start topkek: %w", err)
+		return nil, fmt.Errorf("unable to get topkek messages: %w", err)
 	}
 
-	srcMessages := []*tg.Message{}
+	res := []TopkekMessage{}
 
-	for _, topkekMessage := range topkekMessages {
-		if topkekMessage.Type != msgType {
+	for _, msg := range topkekMessages {
+		if msg.Type != msgType {
 			continue
 		}
 
-		srcMessages = append(srcMessages, &topkekMessage.Raw)
+		res = append(res, msg)
 	}
 
-	return srcMessages, nil
+	return res, nil
+}
+
+func topkekMessagesToTG(r []TopkekMessage) []*tg.Message {
+	res := make([]*tg.Message, 0, len(r))
+	for _, msg := range r {
+		res = append(res, &msg.Raw)
+	}
+	return res
 }
 
 func maxChunkSize(n int) int {
@@ -218,15 +237,9 @@ func chunkMessages(srcs []*tg.Message) [][]*tg.Message {
 
 var errNotEnoughTopkekSrcs = errors.New("not enough topkek srcs")
 
-func (r *UpdateHandler) startTopkek(ctx context.Context, storage Storage, topkekID int64) error {
-	topkek, err := storage.GetTopkek(ctx, topkekID)
-	if err != nil {
-		return fmt.Errorf("unable to get topkek: %w", err)
-	}
-
-	srcs, err := r.getTopkekMessages(ctx, storage, topkekID, TopkekMessageTypeSrc)
-	if err != nil {
-		return fmt.Errorf("unable to get topkek src messages: %w", err)
+func (r *UpdateHandler) startTopkek(ctx context.Context, storage Storage, topkek *Topkek, srcs []*tg.Message) error {
+	if topkek.Status != TopkekStatusStarted {
+		return fmt.Errorf("invalid topkek status: %s", topkek.Status)
 	}
 
 	if len(srcs) < 2 {
@@ -243,14 +256,7 @@ func (r *UpdateHandler) startTopkek(ctx context.Context, storage Storage, topkek
 		i += len(chunk)
 	}
 
-	for _, msg := range srcs {
-		err := r.deleteMessage(ctx, topkek.ChatID, msg.MessageID)
-		if err != nil {
-			slog.ErrorContext(ctx, "unable to delete src topkek message", slog.String("err", err.Error()))
-		}
-	}
-
-	err = storage.UpdateTopkekStatus(ctx, topkekID, TopkekStatusStarted)
+	err := storage.UpdateTopkekStatus(ctx, topkek.ID, TopkekStatusStarted)
 	if err != nil {
 		return fmt.Errorf("unable to update topkek: %w", err)
 	}
@@ -258,11 +264,25 @@ func (r *UpdateHandler) startTopkek(ctx context.Context, storage Storage, topkek
 	return nil
 }
 
-func (r *UpdateHandler) sendTopkekChunk(ctx context.Context, storage Storage, topkek *Topkek, chunk []*tg.Message, i int) error {
+func (r *UpdateHandler) sendTopkekChunk(ctx context.Context, storage Storage, topkek *Topkek, srcs []*tg.Message, srcOffset int) error {
+	for _, msg := range srcs {
+		err := storage.CreateTopkekMessage(ctx, TopkekMessage{
+			TopkekID:        topkek.ID,
+			ChatID:          topkek.ChatID,
+			MessageID:       msg.MessageID,
+			SourceMessageID: msg.MessageID,
+			Type:            TopkekMessageTypeSrc,
+			Raw:             *msg,
+		})
+		if err != nil {
+			return fmt.Errorf("unable to create topkek src message: %w", err)
+		}
+	}
+
 	pollAnswers := []string{}
 	files := []any{}
 
-	for _, msg := range chunk {
+	for i, msg := range srcs {
 		switch {
 		case len(msg.Photo) > 0:
 			photo := msg.Photo[len(msg.Photo)-1]
@@ -275,8 +295,7 @@ func (r *UpdateHandler) sendTopkekChunk(ctx context.Context, storage Storage, to
 			continue
 		}
 
-		pollAnswers = append(pollAnswers, strconv.Itoa(i+1))
-		i++
+		pollAnswers = append(pollAnswers, strconv.Itoa(srcOffset+i+1))
 	}
 
 	msgIds, err := r.sendMediaGroup(ctx, topkek.ChatID, files)
@@ -284,13 +303,18 @@ func (r *UpdateHandler) sendTopkekChunk(ctx context.Context, storage Storage, to
 		return fmt.Errorf("unable to send media group: %w", err)
 	}
 
-	for _, msg := range msgIds {
+	if len(srcs) != len(msgIds) {
+		return fmt.Errorf("not all topkek candidates msgs are sent: expected %d, got %d", len(srcs), len(msgIds))
+	}
+
+	for i, msg := range msgIds {
 		err := storage.CreateTopkekMessage(ctx, TopkekMessage{
-			TopkekID:  topkek.ID,
-			ChatID:    topkek.ChatID,
-			MessageID: msg.MessageID,
-			Type:      TopkekMessageTypeDst,
-			Raw:       msg,
+			TopkekID:        topkek.ID,
+			ChatID:          topkek.ChatID,
+			MessageID:       msg.MessageID,
+			SourceMessageID: srcs[i].MessageID,
+			Type:            TopkekMessageTypeDst,
+			Raw:             msg,
 		})
 		if err != nil {
 			return fmt.Errorf("unable to create topkek dst message: %w", err)
@@ -374,13 +398,6 @@ func (r *UpdateHandler) handleFinishTopkek(ctx context.Context, storage Storage,
 		return nil
 	}
 
-	if topkek.Status == TopkekStatusCreated {
-		err = r.finishTopkekForce(ctx, storage, topkek.ID)
-		if err != nil {
-			return fmt.Errorf("unable to finish topkek: %w", err)
-		}
-		return nil
-	}
 	if topkek.Status != TopkekStatusStarted {
 		_, err := r.sendMessageReply(ctx, message.Chat.ID, message.MessageID, "сначала начни топкек, шкура")
 		if err != nil {
@@ -513,7 +530,7 @@ func (r *UpdateHandler) finishTopkek(ctx context.Context, storage Storage, topke
 	if len(winners) > 1 {
 		winnerMsgs := []*tg.Message{}
 		for _, winner := range winners {
-			winnerMsgs = append(winnerMsgs, destMsgs[winner])
+			winnerMsgs = append(winnerMsgs, &destMsgs[winner].Raw)
 		}
 
 		err := r.restartTopkek(ctx, storage, topkek, winnerMsgs)
@@ -530,11 +547,11 @@ func (r *UpdateHandler) finishTopkek(ctx context.Context, storage Storage, topke
 	var winnerMsgRes *tg.Message
 
 	switch {
-	case len(winnerMsg.Photo) > 0:
-		photo := winnerMsg.Photo[len(winnerMsg.Photo)-1]
+	case len(winnerMsg.Raw.Photo) > 0:
+		photo := winnerMsg.Raw.Photo[len(winnerMsg.Raw.Photo)-1]
 		winnerMsgRes, err = r.sendPhotoRepy(ctx,
 			topkek.ChatID,
-			winnerMsg.MessageID,
+			winnerMsg.SourceMessageID,
 			fmt.Sprintf("Победитель %s", topkek.Name),
 			photo.FileID,
 		)
@@ -542,12 +559,12 @@ func (r *UpdateHandler) finishTopkek(ctx context.Context, storage Storage, topke
 			return fmt.Errorf("unable to send winner photo: %w", err)
 		}
 
-	case winnerMsg.Video != nil:
+	case winnerMsg.Raw.Video != nil:
 		winnerMsgRes, err = r.sendVideoRepy(ctx,
 			topkek.ChatID,
-			winnerMsg.MessageID,
+			winnerMsg.SourceMessageID,
 			fmt.Sprintf("Победитель %s", topkek.Name),
-			winnerMsg.Video.FileID,
+			winnerMsg.Raw.Video.FileID,
 		)
 		if err != nil {
 			return fmt.Errorf("unable to send winner video: %w", err)
@@ -555,11 +572,12 @@ func (r *UpdateHandler) finishTopkek(ctx context.Context, storage Storage, topke
 	}
 
 	err = storage.CreateTopkekMessage(ctx, TopkekMessage{
-		TopkekID:  topkekID,
-		ChatID:    topkek.ChatID,
-		MessageID: winnerMsgRes.MessageID,
-		Type:      TopkekMessageTypeWinner,
-		Raw:       *winnerMsgRes,
+		TopkekID:        topkekID,
+		ChatID:          topkek.ChatID,
+		MessageID:       winnerMsgRes.MessageID,
+		SourceMessageID: winnerMsg.SourceMessageID,
+		Type:            TopkekMessageTypeWinner,
+		Raw:             *winnerMsgRes,
 	})
 	if err != nil {
 		return fmt.Errorf("unable to cerate topkek winner msg: %w", err)
@@ -579,29 +597,12 @@ func (r *UpdateHandler) restartTopkek(ctx context.Context, storage Storage, topk
 		return fmt.Errorf("unable to delete topkek old topkek msgs: %w", err)
 	}
 
-	chunks := chunkMessages(srcs)
-	i := 0
-	for _, chunk := range chunks {
-		err := r.sendTopkekChunk(ctx, storage, topkek, chunk, i)
-		if err != nil {
-			return fmt.Errorf("unable to send topkek chunk: %w", err)
-		}
-		i += len(chunk)
-	}
-
-	for _, msg := range srcs {
-		err := r.deleteMessage(ctx, topkek.ChatID, msg.MessageID)
-		if err != nil {
-			slog.ErrorContext(ctx, "unable to delete src topkek message", slog.String("err", err.Error()))
-		}
-	}
-
 	err = storage.UpdateTopkekStatus(ctx, topkek.ID, TopkekStatusStarted)
 	if err != nil {
 		return fmt.Errorf("unable to update topkek: %w", err)
 	}
 
-	return nil
+	return r.startTopkek(ctx, storage, topkek, srcs)
 }
 
 const helpText = `Топкек инструкция:

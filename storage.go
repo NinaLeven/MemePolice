@@ -549,6 +549,7 @@ insert into topkek_message(
 	topkek_id,
 	chat_id,
 	message_id,
+	source_message_id,
 	type,
 	raw
 ) values (
@@ -556,13 +557,15 @@ insert into topkek_message(
 	$2,
 	$3,
 	$4,
-	$5
+	$5,
+	$6
 )
 returning id
 	`,
 		msg.TopkekID,
 		msg.ChatID,
 		msg.MessageID,
+		msg.SourceMessageID,
 		string(msg.Type),
 		string(raw),
 	)
@@ -574,11 +577,12 @@ returning id
 }
 
 type topkekMessageDB struct {
-	TopkekID  int64  `db:"topkek_id"`
-	ChatID    int64  `db:"chat_id"`
-	MessageID int    `db:"message_id"`
-	Type      string `db:"type"`
-	Raw       string `db:"raw"`
+	TopkekID        int64  `db:"topkek_id"`
+	ChatID          int64  `db:"chat_id"`
+	MessageID       int    `db:"message_id"`
+	SourceMessageID int    `db:"source_message_id"`
+	Type            string `db:"type"`
+	Raw             string `db:"raw"`
 }
 
 func topkekMessageFromDB(r topkekMessageDB) (*TopkekMessage, error) {
@@ -589,11 +593,12 @@ func topkekMessageFromDB(r topkekMessageDB) (*TopkekMessage, error) {
 	}
 
 	return &TopkekMessage{
-		TopkekID:  r.TopkekID,
-		ChatID:    r.ChatID,
-		MessageID: r.MessageID,
-		Type:      TopkekMessageType(r.Type),
-		Raw:       data,
+		TopkekID:        r.TopkekID,
+		ChatID:          r.ChatID,
+		MessageID:       r.MessageID,
+		SourceMessageID: r.SourceMessageID,
+		Type:            TopkekMessageType(r.Type),
+		Raw:             data,
 	}, nil
 }
 
@@ -619,6 +624,7 @@ select
 	topkek_id,
 	chat_id,
 	message_id,
+	source_message_id,
 	type,
 	raw
 from topkek_message
@@ -705,37 +711,39 @@ select
 	m.updated_at
 from message as m
 inner join lateral (
-	SELECT sum(jsonb_array_length(reactions)) reacts, 
+	SELECT chat_id, message_id, 
+		sum(jsonb_array_length(reactions)) reacts, 
       	sum(
-           SELECT sum((case 
+           (SELECT sum((case 
 							when (elem->>'emoji') IN ($1, $2) 
 								then 1
 							else 0
 					end))
            FROM jsonb_array_elements(reactions) AS elem
-		   group by true
+		   group by chat_id, message_id)
        	) AS is_stale
 	FROM message_reactions as mr
 	where mr.chat_id = m.chat_id
 		and mr.message_id = m.message_id
 	group by mr.chat_id, mr.message_id
 ) as mr
-	on rm.is_stale = 0
-		and rm.reacts >= $3
+	on mr.is_stale = 0
+		and mr.reacts >= $3
 where m.chat_id = $4
-	and m.id >= $5
+	and m.id >= (select id from message where chat_id = $5 and message_id = $6)
 	and (m.image_hash is not null
-		or m.video_video_hash is not null
-		or m.video_audio_hash is not null)
+		or (m.video_video_hash is not null
+			and m.video_audio_hash is not null))
 `,
 		opts.ExcludeReactions[0],
 		opts.ExcludeReactions[1],
 		opts.MinReactions,
 		opts.ChatID,
+		opts.ChatID,
 		opts.StartingMessageID,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("unable to select message by image hash: %w", err)
+		return nil, fmt.Errorf("unable to select message with min reactions: %w", err)
 	}
 
 	return messagesFromDB(res)

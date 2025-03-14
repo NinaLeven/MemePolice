@@ -34,6 +34,11 @@ create table message_reactions (
 
 create unique index message_reactions_unique_idx on "message_reactions" using btree(chat_id, message_id, user_id);
 
+alter table topkek_message add column source_message_id bigint not null default 0;
+
+update topkek_message
+set source_message_id = message_id;
+
 -- +goose StatementEnd
 
 -- +goose Down
