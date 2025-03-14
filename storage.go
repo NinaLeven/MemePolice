@@ -712,15 +712,15 @@ select
 from message as m
 inner join lateral (
 	SELECT chat_id, message_id, 
-		sum(jsonb_array_length(reactions)) reacts, 
+		sum(coalesce(jsonb_array_length(reactions), 0)) reacts, 
       	sum(
-           (SELECT sum((case 
+           coalesce((SELECT sum((case 
 							when (elem->>'emoji') IN ($1, $2) 
 								then 1
 							else 0
 					end))
            FROM jsonb_array_elements(reactions) AS elem
-		   group by chat_id, message_id)
+		   group by chat_id, message_id), 0)
        	) AS is_stale
 	FROM message_reactions as mr
 	where mr.chat_id = m.chat_id
