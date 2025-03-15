@@ -3,11 +3,9 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"log/slog"
 	"strconv"
-	"strings"
 	"time"
 
 	tg "github.com/OvyFlash/telegram-bot-api"
@@ -30,27 +28,8 @@ func parseCreateTopkekOptions(chatSettings ChatSettings, message *tg.Message) cr
 		opts.StartingMessageID = &message.ReplyToMessage.MessageID
 	}
 
-	args := strings.Split(message.CommandArguments(), " ")
-
-	fs := flag.NewFlagSet("parser", flag.ContinueOnError)
-	mFlag := fs.String("m", "", "An integer value")
-
-	err := fs.Parse(args)
-	if err != nil {
-		return opts
-	}
-
-	if *mFlag != "" {
-		mValue, err := strconv.Atoi(*mFlag)
-		if err != nil {
-			slog.Warn("invalid -m flag", "-m", *mFlag)
-		}
-		opts.MinReactions = mValue
-	}
-
-	positionalArgs := strings.Join(fs.Args(), " ")
-	if positionalArgs != "" {
-		opts.Name = positionalArgs
+	if message.CommandArguments() != "" {
+		opts.Name = message.CommandArguments()
 	}
 
 	return opts
