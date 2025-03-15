@@ -45,8 +45,6 @@ type PSQLStorageManager struct {
 func NewPSQLStorageManager(ctx context.Context,
 	purl string,
 	migrationsDir string,
-	imageDistance int,
-	videoDistance int,
 ) (*PSQLStorageManager, error) {
 	db, err := sql.Open("postgres", purl)
 	if err != nil {
@@ -63,9 +61,7 @@ func NewPSQLStorageManager(ctx context.Context,
 	return &PSQLStorageManager{
 		db: dbx,
 		storage: &storage{
-			db:            dbx,
-			imageDistance: imageDistance,
-			videoDistance: videoDistance,
+			db: dbx,
 		},
 	}, nil
 }
@@ -81,9 +77,6 @@ func (r *PSQLStorageManager) Close() error {
 func (r *PSQLStorageManager) createStorage(db querier) *storage {
 	return &storage{
 		db: db,
-
-		imageDistance: r.imageDistance,
-		videoDistance: r.videoDistance,
 	}
 }
 
@@ -136,9 +129,6 @@ type querier interface {
 
 type storage struct {
 	db querier
-
-	imageDistance int
-	videoDistance int
 }
 
 func (r *storage) getNewMessageID(ctx context.Context) (int64, error) {
@@ -282,7 +272,7 @@ func messageFromDB(r messageDB) (*Message, error) {
 	}, nil
 }
 
-func (r *storage) getMatchingMessageByImageHash(ctx context.Context, chatID int64, hash uint64, order string) (*Message, error) {
+func (r *storage) getMatchingMessageByImageHash(ctx context.Context, chatID int64, hash uint64, hdist int, order string) (*Message, error) {
 	var res []messageDB
 
 	err := r.db.SelectContext(ctx, &res, `
@@ -303,7 +293,7 @@ order by created_at `+order+`
 limit 1
 `,
 		int64(hash),
-		r.imageDistance,
+		hdist,
 		chatID,
 	)
 	if err != nil {
@@ -317,12 +307,12 @@ limit 1
 	return messageFromDB(res[0])
 }
 
-func (r *storage) GetFirstMatchingMessageByImageHash(ctx context.Context, chatID int64, hash uint64) (*Message, error) {
-	return r.getMatchingMessageByImageHash(ctx, chatID, hash, "asc")
+func (r *storage) GetFirstMatchingMessageByImageHash(ctx context.Context, chatID int64, hash uint64, hdist int) (*Message, error) {
+	return r.getMatchingMessageByImageHash(ctx, chatID, hash, hdist, "asc")
 }
 
-func (r *storage) GetLastMatchingMessageByImageHash(ctx context.Context, chatID int64, hash uint64) (*Message, error) {
-	return r.getMatchingMessageByImageHash(ctx, chatID, hash, "desc")
+func (r *storage) GetLastMatchingMessageByImageHash(ctx context.Context, chatID int64, hash uint64, hdist int) (*Message, error) {
+	return r.getMatchingMessageByImageHash(ctx, chatID, hash, hdist, "desc")
 }
 
 func (r *storage) GetMessage(ctx context.Context, chatID int64, messageID int) (*Message, error) {
@@ -381,7 +371,7 @@ func (r *storage) GetLastUpdateID(ctx context.Context) (int, error) {
 	return res, nil
 }
 
-func (r *storage) getMatchingMessageByVideoHash(ctx context.Context, chatID int64, videoHash uint64, audioHash uint64, order string) (*Message, error) {
+func (r *storage) getMatchingMessageByVideoHash(ctx context.Context, chatID int64, videoHash uint64, audioHash uint64, hdist int, order string) (*Message, error) {
 	var res []messageDB
 
 	err := r.db.SelectContext(ctx, &res, `
@@ -405,7 +395,7 @@ limit 1
 `,
 		int64(videoHash),
 		int64(audioHash),
-		r.videoDistance,
+		hdist,
 		chatID,
 	)
 	if err != nil {
@@ -419,12 +409,12 @@ limit 1
 	return messageFromDB(res[0])
 }
 
-func (r *storage) GetFirstMatchingMessageByVideoHash(ctx context.Context, chatID int64, videoHash, audioHash uint64) (*Message, error) {
-	return r.getMatchingMessageByVideoHash(ctx, chatID, videoHash, audioHash, "asc")
+func (r *storage) GetFirstMatchingMessageByVideoHash(ctx context.Context, chatID int64, videoHash, audioHash uint64, hdist int) (*Message, error) {
+	return r.getMatchingMessageByVideoHash(ctx, chatID, videoHash, audioHash, hdist, "asc")
 }
 
-func (r *storage) GetLastMatchingMessageByVideoHash(ctx context.Context, chatID int64, videoHash, audioHash uint64) (*Message, error) {
-	return r.getMatchingMessageByVideoHash(ctx, chatID, videoHash, audioHash, "desc")
+func (r *storage) GetLastMatchingMessageByVideoHash(ctx context.Context, chatID int64, videoHash, audioHash uint64, hdist int) (*Message, error) {
+	return r.getMatchingMessageByVideoHash(ctx, chatID, videoHash, audioHash, hdist, "desc")
 }
 
 func (r *storage) CreateTopkek(ctx context.Context, tk Topkek) (int64, error) {
@@ -730,7 +720,7 @@ inner join lateral (
 	on mr.is_stale = 0
 		and mr.reacts >= $3
 where m.chat_id = $4
-	and m.id >= (select id from message where chat_id = $5 and message_id = $6)
+	and m.id >= (select id from message where chat_id = $4 and message_id = $5)
 	and (m.image_hash is not null
 		or (m.video_video_hash is not null
 			and m.video_audio_hash is not null))
@@ -739,7 +729,6 @@ where m.chat_id = $4
 		opts.ExcludeReactions[1],
 		opts.MinReactions,
 		opts.ChatID,
-		opts.ChatID,
 		opts.StartingMessageID,
 	)
 	if err != nil {
@@ -747,4 +736,61 @@ where m.chat_id = $4
 	}
 
 	return messagesFromDB(res)
+}
+
+func (r *storage) UpsertChatSettings(ctx context.Context, settings ChatSettings) error {
+	_, err := r.db.ExecContext(ctx, `
+insert into chat_settings(
+	chat_id,
+	min_reactions,
+	image_hamming_distance,
+	video_hamming_distance
+) values (
+	$1,
+	$2,
+	$3,
+	$4
+)
+on conflict (chat_id)
+	do update 
+		set 
+			min_reactions = excluded.min_reactions,
+			image_hamming_distance = excluded.image_hamming_distance,
+			video_hamming_distance = excluded.video_hamming_distance
+	`,
+		settings.ChatID,
+		settings.MinReactions,
+		settings.ImageHammingDistance,
+		settings.VideoHammingDistance,
+	)
+	if err != nil {
+		return fmt.Errorf("unable to upsert chat settings: %w", err)
+	}
+
+	return nil
+}
+
+func (r *storage) GetChatSettings(ctx context.Context, chatID int64) (*ChatSettings, error) {
+	var res []ChatSettings
+
+	err := r.db.SelectContext(ctx, &res, `
+select 
+	chat_id,
+	min_reactions,
+	image_hamming_distance,
+	video_hamming_distance
+from chat_settings
+where chat_id = $1
+`,
+		chatID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("unable to select chat settings: %w", err)
+	}
+
+	if len(res) == 0 {
+		return nil, &ErrNotFound{}
+	}
+
+	return &res[0], nil
 }

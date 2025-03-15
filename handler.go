@@ -7,19 +7,16 @@ import (
 	"errors"
 	"fmt"
 	"image"
-	"io"
+	_ "image/jpeg"
+	_ "image/png"
 	"log/slog"
 	"mime"
-	"net/http"
 	"os"
 	"path"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
-
-	_ "image/jpeg"
-	_ "image/png"
 
 	"github.com/NinaLeven/MemePolice/fsutils"
 	"github.com/NinaLeven/MemePolice/videohash"
@@ -345,50 +342,8 @@ func (r *UpdateHandler) LiveChat(ctx context.Context, chatID int64) {
 	}
 
 	if err := scanner.Err(); err != nil {
-		slog.ErrorContext(ctx, "unable to read stdin: %w", err)
+		slog.ErrorContext(ctx, "unable to read stdin", "error", err)
 	}
-}
-
-func (r *UpdateHandler) sendMessage(ctx context.Context,
-	chatID int64,
-	text string,
-) (*tg.Message, error) {
-	voice := tg.NewMessage(chatID, text)
-
-	res, err := r.bot.Send(voice)
-	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			return nil, &ErrNotFound{
-				Err: fmt.Errorf("unable to send text message: %w", err),
-			}
-		}
-		return nil, fmt.Errorf("unable to send text message: %w", err)
-	}
-
-	return &res, nil
-}
-
-func (r *UpdateHandler) sendVoiceMessage(ctx context.Context,
-	chatID int64,
-	name string,
-	data []byte,
-) error {
-	voice := tg.NewVoice(chatID, tg.FileBytes{
-		Name:  name,
-		Bytes: data,
-	})
-
-	_, err := r.bot.Send(voice)
-	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			return &ErrNotFound{
-				Err: fmt.Errorf("unable to send text message: %w", err),
-			}
-		}
-		return fmt.Errorf("unable to send audio message: %w", err)
-	}
-
-	return nil
 }
 
 func (r *UpdateHandler) handleMessageReaction(ctx context.Context, storage Storage, messageReaction *tg.MessageReactionUpdated) error {
@@ -474,6 +429,30 @@ func (r *UpdateHandler) handleCommand(ctx context.Context, storage Storage, mess
 			return fmt.Errorf("unable to handle finish topkek: %w", err)
 		}
 
+	case "settings":
+		err := r.handleChatSettings(ctx, storage, message)
+		if err != nil {
+			return fmt.Errorf("unable to handle chat settings: %w", err)
+		}
+
+	case "setminreacts":
+		err := r.handleChatSettingsMinReactions(ctx, storage, message)
+		if err != nil {
+			return fmt.Errorf("unable to handle chat settings min reactions: %w", err)
+		}
+
+	case "setimghdist":
+		err := r.handleChatSettingsImageHammingDistamce(ctx, storage, message)
+		if err != nil {
+			return fmt.Errorf("unable to handle chat settings image hamming distance: %w", err)
+		}
+
+	case "setvidhdist":
+		err := r.handleChatSettingsVideoHammingDistamce(ctx, storage, message)
+		if err != nil {
+			return fmt.Errorf("unable to handle chat settings video hamming distance: %w", err)
+		}
+
 	case "help":
 		err := r.handleHelp(ctx, storage, message)
 		if err != nil {
@@ -537,14 +516,19 @@ func (r *UpdateHandler) handleWhyCommand(ctx context.Context, storage Storage, m
 		return nil
 	}
 
+	chatSettings, err := r.getOrCreateChatSettings(ctx, storage, message.Chat.ID)
+	if err != nil {
+		return fmt.Errorf("unable to get or create chat settings: %w", err)
+	}
+
 	var origMsg *Message
 
 	switch {
 	case repeatedMsg.ImageHash != nil:
-		origMsg, err = storage.GetFirstMatchingMessageByImageHash(ctx, message.Chat.ID, *repeatedMsg.ImageHash)
+		origMsg, err = storage.GetFirstMatchingMessageByImageHash(ctx, message.Chat.ID, *repeatedMsg.ImageHash, chatSettings.ImageHammingDistance)
 
 	case repeatedMsg.VideoVideoHash != nil && repeatedMsg.VideoAudioHash != nil:
-		origMsg, err = storage.GetFirstMatchingMessageByVideoHash(ctx, message.Chat.ID, *repeatedMsg.VideoVideoHash, *repeatedMsg.VideoAudioHash)
+		origMsg, err = storage.GetFirstMatchingMessageByVideoHash(ctx, message.Chat.ID, *repeatedMsg.VideoVideoHash, *repeatedMsg.VideoAudioHash, chatSettings.VideoHammingDistance)
 
 	default:
 		err = r.sendVoiceMessageReply(ctx, message.Chat.ID, message.MessageID, "no_repeat", r.assets.GetAudioNoRepeat())
@@ -591,115 +575,6 @@ func (r *UpdateHandler) handleWhyCommand(ctx context.Context, storage Storage, m
 	return nil
 }
 
-func (r *UpdateHandler) sendVoiceMessageReply(ctx context.Context,
-	chatID int64,
-	replyToMessageID int,
-	name string,
-	data []byte,
-) error {
-	voice := tg.NewVoice(chatID, tg.FileBytes{
-		Name:  name,
-		Bytes: data,
-	})
-	voice.ReplyParameters = tg.ReplyParameters{
-		MessageID: replyToMessageID,
-	}
-
-	_, err := r.bot.Send(voice)
-	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			return &ErrNotFound{
-				Err: fmt.Errorf("unable to send text message: %w", err),
-			}
-		}
-		return fmt.Errorf("unable to send audio message: %w", err)
-	}
-
-	return nil
-}
-
-func (r *UpdateHandler) sendMessageReply(ctx context.Context,
-	chatID int64,
-	replyToMessageID int,
-	text string,
-) (int, error) {
-	voice := tg.NewMessage(chatID, text)
-	voice.ReplyParameters = tg.ReplyParameters{
-		MessageID: replyToMessageID,
-	}
-
-	msg, err := r.bot.Send(voice)
-	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			return 0, &ErrNotFound{
-				Err: fmt.Errorf("unable to send text message: %w", err),
-			}
-		}
-		return 0, fmt.Errorf("unable to send text message: %w", err)
-	}
-
-	return msg.MessageID, nil
-}
-
-func (r *UpdateHandler) sendReaction(ctx context.Context, storage Storage, chatID int64, messageID int, emoji string) error {
-	reactions := []tg.ReactionType{
-		{
-			Type:  "emoji",
-			Emoji: emoji,
-		},
-	}
-
-	err := storage.UpsertMessageReactions(ctx, MessageReactions{
-		ChatID:    chatID,
-		MessageID: messageID,
-		UserID:    r.bot.Self.ID,
-		Reactions: reactions,
-		CreatedAt: time.Now().UTC(),
-		UpdatedAt: time.Now().UTC(),
-	})
-	if err != nil {
-		return fmt.Errorf("unable to save stale meme reaction: %w", err)
-	}
-
-	reaction := tg.NewSetMessageReaction(chatID, messageID, reactions, false)
-	_, err = r.bot.Send(reaction)
-	if err != nil && !strings.Contains(err.Error(), "cannot unmarshal bool into Go value of type tgbotapi.Message") {
-		return fmt.Errorf("unable to make send reaction: %w", err)
-	}
-
-	return nil
-}
-
-func (r *UpdateHandler) unsendReaction(ctx context.Context, storage Storage, chatID int64, messageID int) error {
-	reactions := []tg.ReactionType{
-		{
-			Type:  "emoji",
-			Emoji: OKEmoji,
-		},
-	}
-
-	err := storage.UpsertMessageReactions(ctx, MessageReactions{
-		ChatID:    chatID,
-		MessageID: messageID,
-		UserID:    r.bot.Self.ID,
-		Reactions: []tg.ReactionType{},
-		CreatedAt: time.Now().UTC(),
-		UpdatedAt: time.Now().UTC(),
-	})
-	if err != nil {
-		return fmt.Errorf("unable to unsave stale meme reaction: %w", err)
-	}
-
-	reaction := tg.NewSetMessageReaction(chatID, messageID, reactions, false)
-
-	_, err = r.bot.Send(reaction)
-	if err != nil && !strings.Contains(err.Error(), "cannot unmarshal bool into Go value of type tgbotapi.Message") {
-		return fmt.Errorf("unable to make unsend reaction: %w", err)
-	}
-
-	return nil
-}
-
 const deleteAutoReplyTimeout = time.Hour
 
 func (r *UpdateHandler) handleNewVideo(ctx context.Context, storage Storage, message *tg.Message) (*uint64, *uint64, error) {
@@ -709,6 +584,11 @@ func (r *UpdateHandler) handleNewVideo(ctx context.Context, storage Storage, mes
 	if message.Video.FileSize > 1024*1024*120 {
 		slog.WarnContext(ctx, "video too big", slog.Int64("size", message.Video.FileSize))
 		return nil, nil, nil
+	}
+
+	chatSettings, err := r.getOrCreateChatSettings(ctx, storage, message.Chat.ID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("unable to get or create chat settings: %w", err)
 	}
 
 	tempDir, err := fsutils.GetTempDir()
@@ -737,7 +617,7 @@ func (r *UpdateHandler) handleNewVideo(ctx context.Context, storage Storage, mes
 		return nil, nil, fmt.Errorf("unable to calculate video perception hash: %w", err)
 	}
 
-	origMessage, err := storage.GetFirstMatchingMessageByVideoHash(ctx, message.Chat.ID, videoHash, audioHash)
+	origMessage, err := storage.GetFirstMatchingMessageByVideoHash(ctx, message.Chat.ID, videoHash, audioHash, chatSettings.VideoHammingDistance)
 	if err != nil && !errors.Is(err, &ErrNotFound{}) {
 		return &videoHash, &audioHash, fmt.Errorf("unable to get lash matching message video hash: %w", err)
 	}
@@ -774,6 +654,11 @@ func (r *UpdateHandler) handleNewPhoto(ctx context.Context, storage Storage, mes
 		return nil, nil
 	}
 
+	chatSettings, err := r.getOrCreateChatSettings(ctx, storage, message.Chat.ID)
+	if err != nil {
+		return nil, fmt.Errorf("unable to get or create chat settings: %w", err)
+	}
+
 	// photo with max resolution
 	photo := message.Photo[len(message.Photo)-1]
 
@@ -787,7 +672,7 @@ func (r *UpdateHandler) handleNewPhoto(ctx context.Context, storage Storage, mes
 		return nil, fmt.Errorf("unable to calculate image perception hash: %w", err)
 	}
 
-	origMessage, err := storage.GetFirstMatchingMessageByImageHash(ctx, message.Chat.ID, imgHash.GetHash())
+	origMessage, err := storage.GetFirstMatchingMessageByImageHash(ctx, message.Chat.ID, imgHash.GetHash(), chatSettings.ImageHammingDistance)
 	if err != nil && !errors.Is(err, &ErrNotFound{}) {
 		return ptr(imgHash.GetHash()), fmt.Errorf("unable to get lash matching message image hash: %w", err)
 	}
@@ -819,70 +704,143 @@ func (r *UpdateHandler) handleNewPhoto(ctx context.Context, storage Storage, mes
 	return ptr(imgHash.GetHash()), nil
 }
 
-func (r *UpdateHandler) getTelegramImage(ctx context.Context, fileID string) (image.Image, error) {
-	fileReader, err := r.getTelegramFile(ctx, fileID)
-	if err != nil {
-		return nil, fmt.Errorf("unable to get telegram file: %w", err)
+func (r *UpdateHandler) getOrCreateChatSettings(ctx context.Context, storage Storage, chatID int64) (*ChatSettings, error) {
+	chatSettings, err := r.storage.GetChatSettings(ctx, chatID)
+	if err != nil && !errors.Is(err, &ErrNotFound{}) {
+		return nil, fmt.Errorf("unable to get chat settings: %w", err)
 	}
-	defer fileReader.Close()
+	if err != nil && errors.Is(err, &ErrNotFound{}) {
+		chatSettings := defaultChatSettings(chatID)
 
-	img, _, err := image.Decode(fileReader)
-	if err != nil {
-		return nil, fmt.Errorf("unable to decode image: %w", err)
+		err := r.storage.UpsertChatSettings(ctx, chatSettings)
+		if err != nil {
+			return nil, fmt.Errorf("unable to upsert chat settings: %w", err)
+		}
+
+		return &chatSettings, nil
 	}
 
-	return img, nil
+	return chatSettings, nil
 }
 
-func (r *UpdateHandler) getTelegramVideo(ctx context.Context, fileID, filePath string) error {
-	fileReader, err := r.getTelegramFile(ctx, fileID)
-	if err != nil {
-		return fmt.Errorf("unable to get telegram file: %w", err)
-	}
-	defer fileReader.Close()
+func formatChatSettings(settings ChatSettings) string {
+	return fmt.Sprintf(`Настройки чата:
+* Минимум реакций для попадания в топкек: %d
+* Расстояние хэмминга для схожести изображений: %d
+* Расстояние хэмминга для схожести видео: %d`,
+		settings.MinReactions,
+		settings.ImageHammingDistance,
+		settings.VideoHammingDistance,
+	)
+}
 
-	file, err := os.Create(filePath)
+func (r *UpdateHandler) handleChatSettings(ctx context.Context, storage Storage, message *tg.Message) error {
+	err := r.sendOutChatSettings(ctx, storage, message.Chat.ID)
 	if err != nil {
-		return fmt.Errorf("unable to open file: %w", err)
-	}
-
-	_, err = io.Copy(file, fileReader)
-	if err != nil {
-		return fmt.Errorf("unable to copy video into file: %w", err)
+		return fmt.Errorf("unable to send out chat settings: %w", err)
 	}
 
 	return nil
 }
 
-func (r *UpdateHandler) getTelegramFile(_ context.Context, fileID string) (io.ReadCloser, error) {
-	file, err := r.bot.GetFile(tg.FileConfig{
-		FileID: fileID,
-	})
+func (r *UpdateHandler) sendOutChatSettings(ctx context.Context, storage Storage, chatID int64) error {
+	chatSettings, err := r.getOrCreateChatSettings(ctx, storage, chatID)
 	if err != nil {
-		return nil, fmt.Errorf("unable to get file link: %w", err)
+		return fmt.Errorf("unable to get or create chat settings: %w", err)
 	}
 
-	resp, err := http.Get(file.Link(r.bot.Token))
+	_, err = r.sendMessage(ctx, chatID, formatChatSettings(*chatSettings))
 	if err != nil {
-		return nil, fmt.Errorf("unable to download file: %w", err)
+		return fmt.Errorf("unable to send message: %w", err)
 	}
 
-	return resp.Body, nil
+	return nil
 }
 
-func (r *UpdateHandler) deleteMessage(_ context.Context, chatID int64, messageID int) error {
-	params := tg.Params{
-		"chat_id":    strconv.FormatInt(chatID, 10),
-		"message_id": strconv.Itoa(messageID),
-	}
-
-	resp, err := r.bot.MakeRequest("deleteMessage", params)
+func (r *UpdateHandler) handleChatSettingsMinReactions(ctx context.Context, storage Storage, message *tg.Message) error {
+	minRections, err := strconv.Atoi(strings.Trim(message.CommandArguments(), " "))
 	if err != nil {
-		return fmt.Errorf("unable to make deleteMessage request: %w", err)
+		_, err = r.sendMessageReply(ctx, message.Chat.ID, message.MessageID, "аргумент должен быть числом")
+		if err != nil {
+			return fmt.Errorf("unable to send int parse error reply: %w", err)
+		}
+		return nil
 	}
 
-	if !resp.Ok {
-		return fmt.Errorf("error making deleteMessage reqeust: error_code: %d", resp.ErrorCode)
+	chatSettings, err := r.getOrCreateChatSettings(ctx, storage, message.Chat.ID)
+	if err != nil {
+		return fmt.Errorf("unable to get or create chat settings: %w", err)
+	}
+
+	chatSettings.MinReactions = max(0, minRections)
+
+	err = r.storage.UpsertChatSettings(ctx, *chatSettings)
+	if err != nil {
+		return fmt.Errorf("unable to update chat settings: %w", err)
+	}
+
+	err = r.sendOutChatSettings(ctx, storage, message.Chat.ID)
+	if err != nil {
+		return fmt.Errorf("unable to send out chat settings: %w", err)
+	}
+
+	return nil
+}
+func (r *UpdateHandler) handleChatSettingsImageHammingDistamce(ctx context.Context, storage Storage, message *tg.Message) error {
+	dist, err := strconv.Atoi(strings.Trim(message.CommandArguments(), " "))
+	if err != nil {
+		_, err = r.sendMessageReply(ctx, message.Chat.ID, message.MessageID, "аргумент должен быть числом")
+		if err != nil {
+			return fmt.Errorf("unable to send int parse error reply: %w", err)
+		}
+		return nil
+	}
+
+	chatSettings, err := r.getOrCreateChatSettings(ctx, storage, message.Chat.ID)
+	if err != nil {
+		return fmt.Errorf("unable to get or create chat settings: %w", err)
+	}
+
+	chatSettings.ImageHammingDistance = max(0, dist)
+
+	err = r.storage.UpsertChatSettings(ctx, *chatSettings)
+	if err != nil {
+		return fmt.Errorf("unable to update chat settings: %w", err)
+	}
+
+	err = r.sendOutChatSettings(ctx, storage, message.Chat.ID)
+	if err != nil {
+		return fmt.Errorf("unable to send out chat settings: %w", err)
+	}
+
+	return nil
+}
+
+func (r *UpdateHandler) handleChatSettingsVideoHammingDistamce(ctx context.Context, storage Storage, message *tg.Message) error {
+	dist, err := strconv.Atoi(strings.Trim(message.CommandArguments(), " "))
+	if err != nil {
+		_, err = r.sendMessageReply(ctx, message.Chat.ID, message.MessageID, "аргумент должен быть числом")
+		if err != nil {
+			return fmt.Errorf("unable to send int parse error reply: %w", err)
+		}
+		return nil
+	}
+
+	chatSettings, err := r.getOrCreateChatSettings(ctx, storage, message.Chat.ID)
+	if err != nil {
+		return fmt.Errorf("unable to get or create chat settings: %w", err)
+	}
+
+	chatSettings.VideoHammingDistance = max(0, dist)
+
+	err = r.storage.UpsertChatSettings(ctx, *chatSettings)
+	if err != nil {
+		return fmt.Errorf("unable to update chat settings: %w", err)
+	}
+
+	err = r.sendOutChatSettings(ctx, storage, message.Chat.ID)
+	if err != nil {
+		return fmt.Errorf("unable to send out chat settings: %w", err)
 	}
 
 	return nil

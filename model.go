@@ -80,10 +80,10 @@ type ListMessagesWithReactionCountOptions struct {
 
 type Storage interface {
 	UpsertMessage(ctx context.Context, msg Message) error
-	GetFirstMatchingMessageByImageHash(ctx context.Context, chatID int64, hash uint64) (*Message, error)
-	GetLastMatchingMessageByImageHash(ctx context.Context, chatID int64, hash uint64) (*Message, error)
-	GetFirstMatchingMessageByVideoHash(ctx context.Context, chatID int64, videoHash, audioHash uint64) (*Message, error)
-	GetLastMatchingMessageByVideoHash(ctx context.Context, chatID int64, videoHash, audioHash uint64) (*Message, error)
+	GetFirstMatchingMessageByImageHash(ctx context.Context, chatID int64, hash uint64, hdist int) (*Message, error)
+	GetLastMatchingMessageByImageHash(ctx context.Context, chatID int64, hash uint64, hdist int) (*Message, error)
+	GetFirstMatchingMessageByVideoHash(ctx context.Context, chatID int64, videoHash, audioHash uint64, hdist int) (*Message, error)
+	GetLastMatchingMessageByVideoHash(ctx context.Context, chatID int64, videoHash, audioHash uint64, hdist int) (*Message, error)
 	GetMessage(ctx context.Context, chatID int64, messageID int) (*Message, error)
 
 	UpsertMessageReactions(ctx context.Context, msg MessageReactions) error
@@ -99,6 +99,9 @@ type Storage interface {
 	CreateTopkekMessage(ctx context.Context, msg TopkekMessage) error
 	GetTopkekMessages(ctx context.Context, topkekID int64) ([]TopkekMessage, error)
 	DeleteTopkekMessages(ctx context.Context, topkekID int64) error
+
+	UpsertChatSettings(ctx context.Context, settings ChatSettings) error
+	GetChatSettings(ctx context.Context, chatID int64) (*ChatSettings, error)
 }
 
 type StorageManager interface {
@@ -146,4 +149,20 @@ type TopkekMessage struct {
 	SourceMessageID int
 	Type            TopkekMessageType
 	Raw             tg.Message
+}
+
+func defaultChatSettings(chatID int64) ChatSettings {
+	return ChatSettings{
+		ChatID:               chatID,
+		MinReactions:         5,
+		ImageHammingDistance: 3,
+		VideoHammingDistance: 11,
+	}
+}
+
+type ChatSettings struct {
+	ChatID               int64 `db:"chat_id"`
+	MinReactions         int   `db:"min_reactions"`
+	ImageHammingDistance int   `db:"image_hamming_distance"`
+	VideoHammingDistance int   `db:"video_hamming_distance"`
 }

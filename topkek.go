@@ -13,9 +13,7 @@ import (
 	tg "github.com/OvyFlash/telegram-bot-api"
 )
 
-const defaultMinimumReactions = 5
-
-func parseCreateTopkekOptions(message *tg.Message) createTopkekOptions {
+func parseCreateTopkekOptions(chatSettings ChatSettings, message *tg.Message) createTopkekOptions {
 	opts := createTopkekOptions{
 		ChatID:    message.Chat.ID,
 		AuthorID:  message.From.ID,
@@ -25,7 +23,7 @@ func parseCreateTopkekOptions(message *tg.Message) createTopkekOptions {
 			time.Now().UTC().Month(),
 			time.Now().UTC().Year(),
 		),
-		MinReactions: defaultMinimumReactions,
+		MinReactions: chatSettings.MinReactions,
 	}
 
 	if message.ReplyToMessage != nil {
@@ -59,9 +57,14 @@ func parseCreateTopkekOptions(message *tg.Message) createTopkekOptions {
 }
 
 func (r *UpdateHandler) handleCreateTopkek(ctx context.Context, storage Storage, message *tg.Message) error {
-	opts := parseCreateTopkekOptions(message)
+	chatSettings, err := r.getOrCreateChatSettings(ctx, storage, message.Chat.ID)
+	if err != nil {
+		return fmt.Errorf("unable to get or create chat settings: %w", err)
+	}
 
-	err := r.createTopkek(ctx, storage, opts)
+	opts := parseCreateTopkekOptions(*chatSettings, message)
+
+	err = r.createTopkek(ctx, storage, opts)
 	if err != nil &&
 		!errors.Is(err, errNotEnoughTopkekSrcs) &&
 		!errors.Is(err, errNoTopkekStartMessage) &&
@@ -194,14 +197,6 @@ func (r *UpdateHandler) getTopkekMessages(ctx context.Context, storage Storage, 
 	}
 
 	return res, nil
-}
-
-func topkekMessagesToTG(r []TopkekMessage) []*tg.Message {
-	res := make([]*tg.Message, 0, len(r))
-	for _, msg := range r {
-		res = append(res, &msg.Raw)
-	}
-	return res
 }
 
 func maxChunkSize(n int) int {
@@ -340,50 +335,6 @@ func (r *UpdateHandler) sendTopkekChunk(ctx context.Context, storage Storage, to
 	return nil
 }
 
-func (r *UpdateHandler) sendMediaGroup(ctx context.Context,
-	chatID int64,
-	files []any,
-) ([]tg.Message, error) {
-	msgs, err := r.bot.SendMediaGroup(tg.NewMediaGroup(chatID, files))
-	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			return nil, &ErrNotFound{
-				Err: fmt.Errorf("unable to send media group: %w", err),
-			}
-		}
-		return nil, fmt.Errorf("unable to send media group: %w", err)
-	}
-
-	return msgs, nil
-}
-
-func (r *UpdateHandler) sendSimplePoll(ctx context.Context,
-	chatID int64,
-	question string,
-	answers []string,
-) (*tg.Message, error) {
-	opts := make([]tg.InputPollOption, 0, len(answers))
-	for _, a := range answers {
-		opts = append(opts, tg.NewPollOption(a))
-	}
-
-	poll := tg.NewPoll(chatID, question, opts...)
-	poll.AllowsMultipleAnswers = true
-	poll.IsAnonymous = false
-
-	msg, err := r.bot.Send(poll)
-	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			return nil, &ErrNotFound{
-				Err: fmt.Errorf("unable to send poll: %w", err),
-			}
-		}
-		return nil, fmt.Errorf("unable to send poll: %w", err)
-	}
-
-	return &msg, nil
-}
-
 func (r *UpdateHandler) handleFinishTopkek(ctx context.Context, storage Storage, message *tg.Message) error {
 	topkek, err := storage.GetLastTopkek(ctx, message.Chat.ID)
 	if err != nil {
@@ -435,56 +386,6 @@ func getPollWinners(opts []tg.PollOption) []int {
 	}
 
 	return res
-}
-
-func (r *UpdateHandler) sendPhotoRepy(ctx context.Context,
-	chatID int64,
-	replyMessageID int,
-	text string,
-	fileID string,
-) (*tg.Message, error) {
-	photo := tg.NewPhoto(chatID, tg.FileID(fileID))
-	photo.Caption = text
-	photo.ReplyParameters = tg.ReplyParameters{
-		MessageID: replyMessageID,
-	}
-
-	msg, err := r.bot.Send(photo)
-	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			return nil, &ErrNotFound{
-				Err: fmt.Errorf("unable to send photo reply: %w", err),
-			}
-		}
-		return nil, fmt.Errorf("unable to send photo reply: %w", err)
-	}
-
-	return &msg, nil
-}
-
-func (r *UpdateHandler) sendVideoRepy(ctx context.Context,
-	chatID int64,
-	replyMessageID int,
-	text string,
-	fileID string,
-) (*tg.Message, error) {
-	photo := tg.NewVideo(chatID, tg.FileID(fileID))
-	photo.Caption = text
-	photo.ReplyParameters = tg.ReplyParameters{
-		MessageID: replyMessageID,
-	}
-
-	msg, err := r.bot.Send(photo)
-	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			return nil, &ErrNotFound{
-				Err: fmt.Errorf("unable to send video reply: %w", err),
-			}
-		}
-		return nil, fmt.Errorf("unable to send video reply: %w", err)
-	}
-
-	return &msg, nil
 }
 
 func (r *UpdateHandler) finishTopkekForce(ctx context.Context, storage Storage, topkekID int64) error {
@@ -605,14 +506,14 @@ func (r *UpdateHandler) restartTopkek(ctx context.Context, storage Storage, topk
 	return r.startTopkek(ctx, storage, topkek, srcs)
 }
 
-const helpText = `Топкек инструкция:
+func (r *UpdateHandler) handleHelp(ctx context.Context, _ Storage, message *tg.Message) error {
+	const helpText = `Топкек инструкция:
 * Создай топкек - /topkek
 * По умолчанию топкек создается начиная с предыдушего
 * Вместе с командой /topkek можно передать реплай на сообщение с которого должен начаться топкек
 * Ждем сколько надо голосования
 * Завершаем топкек /stopkek`
 
-func (r *UpdateHandler) handleHelp(ctx context.Context, storage Storage, message *tg.Message) error {
 	_, err := r.sendMessage(ctx, message.Chat.ID, helpText)
 	if err != nil {
 		return fmt.Errorf("unable to send text message: %w", err)
