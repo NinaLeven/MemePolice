@@ -70,7 +70,7 @@ func perceptualVideoHash(tempDir, videoPath string) (uint64, error) {
 		return 0, fmt.Errorf("unable to extract frames: %w", err)
 	}
 
-	collagePath := path.Join(tempDir, "collage.jpeg")
+	collagePath := path.Join(tempDir, "collage.png")
 
 	err = createCollage(framesFilenames, collagePath)
 	if err != nil {
