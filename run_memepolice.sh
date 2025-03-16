@@ -10,7 +10,7 @@ cleanup() {
 trap cleanup SIGINT SIGTERM
 
 source build_fpcalc.sh
-BOT_TOKEN=$(cat secret.txt)
+export BOT_TOKEN=$(cat secret.txt)
 go build -o memepolice .
 
 while true; do
