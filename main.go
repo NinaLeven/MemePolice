@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"syscall"
 	"time"
 
 	tg "github.com/OvyFlash/telegram-bot-api"
@@ -31,7 +32,7 @@ func main() {
 
 	ctx := context.Background()
 
-	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, os.Kill)
+	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, os.Kill, syscall.SIGTERM)
 	defer cancel()
 
 	assetsDirPath := flag.String("a", "assets", "path to assets directory")
