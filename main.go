@@ -14,22 +14,25 @@ import (
 )
 
 func main() {
-	ctx := context.Background()
-
-	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, os.Kill)
-	defer cancel()
-
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
 	slog.SetDefault(logger)
 
 	defer func() {
+		slog.Info("exiting")
+	}()
+	defer func() {
 		val := recover()
 		if val != nil {
 			slog.Error("panic", slog.Any("val", val))
 		}
 	}()
+
+	ctx := context.Background()
+
+	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, os.Kill)
+	defer cancel()
 
 	assetsDirPath := flag.String("a", "assets", "path to assets directory")
 	migrationsDirPath := flag.String("m", "migrations", "path to migrations directory")

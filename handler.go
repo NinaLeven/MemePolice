@@ -259,7 +259,7 @@ func (r *UpdateHandler) HandleUpdates(ctx context.Context) error {
 	}
 
 	u := tg.NewUpdate(lastUpdateID)
-	u.Timeout = 60
+	u.Timeout = 120
 	u.AllowedUpdates = []string{
 		"message",
 		"message_reaction",
@@ -274,6 +274,7 @@ func (r *UpdateHandler) HandleUpdates(ctx context.Context) error {
 
 		case update, ok := <-updates:
 			if !ok {
+				slog.InfoContext(ctx, "updates chan closed")
 				return nil
 			}
 
