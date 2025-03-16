@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+source build_fpcalc.sh
 export BOT_TOKEN=$(cat secret.txt)
 go build -o memepolice .
 ./memepolice &>> "/var/log/memepolice.log"
