@@ -20,6 +20,8 @@ func main() {
 	}))
 	slog.SetDefault(logger)
 
+	slog.Info("running memepolice")
+
 	defer func() {
 		slog.Info("exiting")
 	}()
