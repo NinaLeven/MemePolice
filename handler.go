@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,7 +14,6 @@ import (
 	"path"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/NinaLeven/MemePolice/fsutils"
@@ -97,8 +95,6 @@ func (t *text) UnmarshalJSON(data []byte) error {
 
 	return nil
 }
-
-const MemalnyaChatID int64 = -1001960713646
 
 func (r *UpdateHandler) OneTimeMigration(ctx context.Context, dataDirectoryPath string, chatID int64) error {
 	type message struct {
@@ -320,31 +316,6 @@ func (r *UpdateHandler) handleUpdate(ctx context.Context, update tg.Update) erro
 	}
 
 	return nil
-}
-
-func (r *UpdateHandler) LiveChat(ctx context.Context, chatID int64) {
-	var closed int32
-
-	go func() {
-		<-ctx.Done()
-		atomic.StoreInt32(&closed, 1)
-	}()
-
-	scanner := bufio.NewScanner(os.Stdin)
-	for scanner.Scan() {
-		_, err := r.sendMessage(ctx, chatID, scanner.Text())
-		if err != nil {
-			slog.ErrorContext(ctx, "unable to send message", slog.String("err", err.Error()))
-		}
-
-		if atomic.LoadInt32(&closed) == 1 {
-			return
-		}
-	}
-
-	if err := scanner.Err(); err != nil {
-		slog.ErrorContext(ctx, "unable to read stdin", "error", err)
-	}
 }
 
 func (r *UpdateHandler) handleMessageReaction(ctx context.Context, storage Storage, messageReaction *tg.MessageReactionUpdated) error {

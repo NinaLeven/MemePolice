@@ -41,7 +41,7 @@ func main() {
 	migrationsDirPath := flag.String("m", "migrations", "path to migrations directory")
 	dumpDirPath := flag.String("d", "", "path to dump directory")
 	postgresURL := flag.String("p", "postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable", "postgres url")
-	liveChat := flag.Bool("c", false, "enable live memalnya chat")
+	migrationChatID := flag.Int64("c", 0, "migrtion chat id")
 
 	flag.Parse()
 
@@ -64,17 +64,13 @@ func main() {
 
 	updateHandler := NewUpdateHandler(bot, psqlStorage, assets)
 
-	if *liveChat {
-		go updateHandler.LiveChat(ctx, MemalnyaChatID)
-	}
-
 	if *dumpDirPath == "" {
 		err := updateHandler.HandleUpdates(ctx)
 		if err != nil {
 			slog.ErrorContext(ctx, "unable to handle updates", slog.String("err", err.Error()))
 		}
 	} else {
-		err := updateHandler.OneTimeMigration(ctx, *dumpDirPath, MemalnyaChatID)
+		err := updateHandler.OneTimeMigration(ctx, *dumpDirPath, *migrationChatID)
 		if err != nil {
 			slog.ErrorContext(ctx, "unable to do one time migratio", slog.String("err", err.Error()))
 		}
