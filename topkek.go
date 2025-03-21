@@ -69,7 +69,7 @@ func (r *UpdateHandler) handleCreateTopkek(ctx context.Context, storage Storage,
 		if err != nil {
 			return fmt.Errorf("unable to send message reply: %w", err)
 		}
-		return errTopkekAlreadyInProgress
+		return errNoTopkekStartMessage
 	}
 
 	return nil
@@ -496,6 +496,96 @@ func (r *UpdateHandler) handleHelp(ctx context.Context, _ Storage, message *tg.M
 	_, err := r.sendMessage(ctx, message.Chat.ID, helpText)
 	if err != nil {
 		return fmt.Errorf("unable to send text message: %w", err)
+	}
+
+	return nil
+}
+
+func (r *UpdateHandler) handlePreview(ctx context.Context, storage Storage, message *tg.Message) error {
+	chatSettings, err := r.getOrCreateChatSettings(ctx, storage, message.Chat.ID)
+	if err != nil {
+		return fmt.Errorf("unable to get or create chat settings: %w", err)
+	}
+
+	lastTopkek, err := storage.GetLastTopkek(ctx, message.Chat.ID)
+	if err != nil && !errors.Is(err, &ErrNotFound{}) {
+		return fmt.Errorf("unable to get latest topkek: %w", err)
+	}
+
+	listOpts := ListMessagesWithReactionCountOptions{
+		ChatID:       message.Chat.ID,
+		MinReactions: chatSettings.MinReactions,
+		ExcludeReactions: [2]string{
+			RepeatedMemeEmoji,
+			StaleMemeEmoji,
+		},
+	}
+
+	if lastTopkek == nil && message.ReplyToMessage == nil {
+		_, err := r.sendMessageReply(ctx, message.Chat.ID, message.MessageID, "надо реплай с какого сообщения начать топкек")
+		if err != nil {
+			return fmt.Errorf("unable to send message reply: %w", err)
+		}
+		return errNoTopkekStartMessage
+	}
+	if lastTopkek != nil {
+		listOpts.StartingMessageID = lastTopkek.MessageID
+	}
+	if message.ReplyToMessage != nil {
+		listOpts.StartingMessageID = message.ReplyToMessage.MessageID
+	}
+
+	sourceMessages, err := storage.ListMessagesWithReactionCount(ctx, listOpts)
+	if err != nil {
+		return fmt.Errorf("unable to find topkek source messages: %w", err)
+	}
+
+	if len(sourceMessages) == 0 {
+		_, err := r.sendMessageReply(ctx, message.Chat.ID, message.MessageID, "нет мемов в топкек")
+		if err != nil {
+			return fmt.Errorf("unable to send message reply: %w", err)
+		}
+		return errNotEnoughTopkekSrcs
+	}
+
+	chunks := chunkMessages(messagesToTG(sourceMessages))
+	for _, chunk := range chunks {
+		files := []any{}
+
+		for _, msg := range chunk {
+			switch {
+			case len(msg.Photo) > 0:
+				photo := msg.Photo[len(msg.Photo)-1]
+				files = append(files, tg.NewInputMediaPhoto(tg.FileID(photo.FileID)))
+
+			case msg.Video != nil:
+				files = append(files, tg.NewInputMediaVideo(tg.FileID(msg.Video.FileID)))
+
+			default:
+				continue
+			}
+		}
+
+		sentMessages, err := r.sendMediaGroup(ctx, message.Chat.ID, files)
+		if err != nil {
+			return fmt.Errorf("unable to send media group: %w", err)
+		}
+
+		msgIds := make([]int, 0, len(sentMessages))
+		for _, msg := range sentMessages {
+			msgIds = append(msgIds, msg.MessageID)
+		}
+
+		go func() {
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Minute):
+				err := r.deleteMessages(ctx, message.Chat.ID, msgIds)
+				if err != nil {
+					slog.ErrorContext(ctx, "unable to delete messages", "error", err, "msg_ids", msgIds)
+				}
+			}
+		}()
 	}
 
 	return nil

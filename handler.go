@@ -395,6 +395,12 @@ func (r *UpdateHandler) handleCommand(ctx context.Context, storage Storage, mess
 			return fmt.Errorf("unable to handle create topkek: %w", err)
 		}
 
+	case "preview":
+		err := r.handlePreview(ctx, storage, message)
+		if err != nil {
+			return fmt.Errorf("unable to handle preview: %w", err)
+		}
+
 	case "stopkek":
 		err := r.handleFinishTopkek(ctx, storage, message)
 		if err != nil {

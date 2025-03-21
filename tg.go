@@ -14,6 +14,7 @@ import (
 	"time"
 
 	tg "github.com/OvyFlash/telegram-bot-api"
+	"go.uber.org/multierr"
 )
 
 func (r *UpdateHandler) sendMessage(ctx context.Context,
@@ -266,6 +267,23 @@ func (r *UpdateHandler) getTelegramFile(_ context.Context, fileID string) (io.Re
 	}
 
 	return resp.Body, nil
+}
+
+func (r *UpdateHandler) deleteMessages(ctx context.Context, chatID int64, messageIDs []int) error {
+	var errs []error
+
+	for _, messageID := range messageIDs {
+		err := r.deleteMessage(ctx, chatID, messageID)
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+
+	if len(errs) != 0 {
+		return multierr.Combine(errs...)
+	}
+
+	return nil
 }
 
 func (r *UpdateHandler) deleteMessage(_ context.Context, chatID int64, messageID int) error {
