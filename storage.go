@@ -724,6 +724,7 @@ where m.chat_id = $4
 	and (m.image_hash is not null
 		or (m.video_video_hash is not null
 			and m.video_audio_hash is not null))
+order by m.id
 `,
 		opts.ExcludeReactions[0],
 		opts.ExcludeReactions[1],
